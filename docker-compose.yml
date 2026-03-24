@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  traefik:
+    image: traefik:v3.3
+    command:
+      - "--api.insecure=true"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.forwardedHeaders.insecure=true"
+      - "--providers.file.filename=/etc/traefik/dynamic.yml"
+      - "--experimental.localPlugins.geoblock.moduleName=github.com/AikoAppeldorn/geoblock"
+      - "--log.level=DEBUG"
+    ports:
+      - "80:80"
+      - "8080:8080"   # Traefik dashboard
+    volumes:
+      - ./docker/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - ./:/plugins-local/src/github.com/AikoAppeldorn/geoblock:ro
+      - geoblock-data:/data
+    depends_on:
+      - whoami
+
+  whoami:
+    image: traefik/whoami
+    expose:
+      - "80"
+
+volumes:
+  geoblock-data:

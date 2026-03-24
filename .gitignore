@@ -1,0 +1,10 @@
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.tmp
+
+# Local config with token - use dynamic.yml.tpl instead
+docker/dynamic.yml

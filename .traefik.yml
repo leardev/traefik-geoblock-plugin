@@ -1,0 +1,14 @@
+displayName: GeoBlock
+type: middleware
+import: github.com/AikoAppeldorn/geoblock
+summary: Geo-blocking middleware using IPInfo Lite database with automatic updates
+testData:
+  allowedCountries:
+    - DE
+    - AT
+    - CH
+  token: "your-ipinfo-token"
+  allowPrivate: true
+  defaultAllow: false
+  databasePath: "/tmp/ipinfo_lite.csv.gz"
+  updateInterval: 24

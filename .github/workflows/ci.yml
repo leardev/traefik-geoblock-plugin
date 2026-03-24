@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Run tests
+        run: go test -v -race -count=1 ./...
+
+      - name: Run benchmarks
+        run: go test -bench=. -benchmem ./...
+
+  integration:
+    name: Integration Test (Docker)
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate dynamic config
+        env:
+          IPINFO_TOKEN: ${{ secrets.IPINFO_TOKEN }}
+        run: |
+          if [ -z "$IPINFO_TOKEN" ]; then
+            echo "::warning::IPINFO_TOKEN secret not set, skipping integration test"
+            exit 0
+          fi
+          envsubst < docker/dynamic.yml.tpl > docker/dynamic.yml
+
+      - name: Start services
+        env:
+          IPINFO_TOKEN: ${{ secrets.IPINFO_TOKEN }}
+        run: |
+          if [ -z "$IPINFO_TOKEN" ]; then
+            exit 0
+          fi
+          docker compose up -d
+          echo "Waiting for Traefik to start and download database..."
+          for i in $(seq 1 60); do
+            if docker compose logs traefik 2>&1 | grep -q 'database updated\|loaded database from disk'; then
+              echo "Database loaded!"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Timed out waiting for database"
+              docker compose logs traefik
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Test geo-blocking
+        env:
+          IPINFO_TOKEN: ${{ secrets.IPINFO_TOKEN }}
+        run: |
+          if [ -z "$IPINFO_TOKEN" ]; then
+            echo "Skipped (no token)"
+            exit 0
+          fi
+
+          PASS=0
+          FAIL=0
+
+          check() {
+            local desc="$1" ip="$2" expected="$3"
+            local code
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: $ip" http://localhost/)
+            if [ "$code" = "$expected" ]; then
+              echo "✅ $desc: $ip -> $code (expected $expected)"
+              PASS=$((PASS + 1))
+            else
+              echo "❌ $desc: $ip -> $code (expected $expected)"
+              FAIL=$((FAIL + 1))
+            fi
+          }
+
+          # Private IP - should be allowed
+          check "Private IP (allow)"       "10.0.0.1"     200
+
+          # German IP - allowed (DE in allowlist)
+          check "German IP (allow)"        "91.0.0.1"     200
+
+          # Austrian IP - allowed (AT in allowlist)
+          check "Austrian IP (allow)"      "77.116.0.1"   200
+
+          # US IP - blocked (not in allowlist)
+          check "US IP (block)"            "8.8.8.8"      403
+
+          # Chinese IP - blocked (not in allowlist)
+          check "Chinese IP (block)"       "1.0.1.1"      403
+
+          # Russian IP - blocked (not in allowlist)
+          check "Russian IP (block)"       "5.3.0.1"      403
+
+          echo ""
+          echo "Results: $PASS passed, $FAIL failed"
+
+          if [ "$FAIL" -gt 0 ]; then
+            docker compose logs traefik | grep geoblock
+            exit 1
+          fi
+
+      - name: Test database update
+        env:
+          IPINFO_TOKEN: ${{ secrets.IPINFO_TOKEN }}
+        run: |
+          if [ -z "$IPINFO_TOKEN" ]; then
+            echo "Skipped (no token)"
+            exit 0
+          fi
+
+          echo "Checking database was saved to disk..."
+          docker compose exec -T traefik ls -lh /data/ipinfo_lite.csv.gz
+          if [ $? -ne 0 ]; then
+            echo "❌ Database file not found on disk"
+            exit 1
+          fi
+          echo "✅ Database file exists on disk"
+
+          echo "Restarting Traefik to test loading from disk cache..."
+          docker compose restart traefik
+          sleep 5
+
+          # Wait for Traefik to load from disk
+          for i in $(seq 1 30); do
+            if docker compose logs traefik --since 30s 2>&1 | grep -q 'loaded database from disk'; then
+              echo "✅ Database loaded from disk cache after restart"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "❌ Timed out waiting for database load from disk"
+              docker compose logs traefik --since 60s 2>&1 | grep geoblock
+              exit 1
+            fi
+            sleep 2
+          done
+
+          # Verify geo-blocking still works after restart
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: 8.8.8.8" http://localhost/)
+          if [ "$CODE" = "403" ]; then
+            echo "✅ Geo-blocking works after restart from disk cache"
+          else
+            echo "❌ Expected 403 for US IP after restart, got $CODE"
+            exit 1
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v 2>/dev/null || true
