@@ -39,7 +39,7 @@ jobs:
             echo "::warning::IPINFO_TOKEN secret not set, skipping integration test"
             exit 0
           fi
-          envsubst < docker/dynamic.yml.tpl > docker/dynamic.yml
+          envsubst < test/docker/dynamic.yml.tpl > test/docker/dynamic.yml
 
       - name: Start services
         env:
@@ -48,16 +48,16 @@ jobs:
           if [ -z "$IPINFO_TOKEN" ]; then
             exit 0
           fi
-          docker compose up -d
+          docker compose -f test/docker-compose.yml up -d
           echo "Waiting for Traefik to start and download database..."
           for i in $(seq 1 60); do
-            if docker compose logs traefik 2>&1 | grep -q 'database updated\|loaded database from disk'; then
+            if docker compose -f test/docker-compose.yml logs traefik 2>&1 | grep -q 'database updated\|loaded database from disk'; then
               echo "Database loaded!"
               break
             fi
             if [ "$i" -eq 60 ]; then
               echo "::error::Timed out waiting for database"
-              docker compose logs traefik
+              docker compose -f test/docker-compose.yml logs traefik
               exit 1
             fi
             sleep 5
@@ -110,7 +110,7 @@ jobs:
           echo "Results: $PASS passed, $FAIL failed"
 
           if [ "$FAIL" -gt 0 ]; then
-            docker compose logs traefik | grep geoblock
+            docker compose -f test/docker-compose.yml logs traefik | grep geoblock
             exit 1
           fi
 
@@ -124,7 +124,7 @@ jobs:
           fi
 
           echo "Checking database was saved to disk..."
-          docker compose exec -T traefik ls -lh /data/ipinfo_lite.csv.gz
+          docker compose -f test/docker-compose.yml exec -T traefik ls -lh /data/ipinfo_lite.csv.gz
           if [ $? -ne 0 ]; then
             echo "❌ Database file not found on disk"
             exit 1
@@ -132,18 +132,18 @@ jobs:
           echo "✅ Database file exists on disk"
 
           echo "Restarting Traefik to test loading from disk cache..."
-          docker compose restart traefik
+          docker compose -f test/docker-compose.yml restart traefik
           sleep 5
 
           # Wait for Traefik to load from disk
           for i in $(seq 1 30); do
-            if docker compose logs traefik --since 30s 2>&1 | grep -q 'loaded database from disk'; then
+            if docker compose -f test/docker-compose.yml logs traefik --since 30s 2>&1 | grep -q 'loaded database from disk'; then
               echo "✅ Database loaded from disk cache after restart"
               break
             fi
             if [ "$i" -eq 30 ]; then
               echo "❌ Timed out waiting for database load from disk"
-              docker compose logs traefik --since 60s 2>&1 | grep geoblock
+              docker compose -f test/docker-compose.yml logs traefik --since 60s 2>&1 | grep geoblock
               exit 1
             fi
             sleep 2
@@ -160,4 +160,4 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: docker compose down -v 2>/dev/null || true
+        run: docker compose -f test/docker-compose.yml down -v 2>/dev/null || true

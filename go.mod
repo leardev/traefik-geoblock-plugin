@@ -1,3 +1,3 @@
-module github.com/AikoAppeldorn/geoblock
+module github.com/leardev/traefik-geoblock-plugin
 
 go 1.22

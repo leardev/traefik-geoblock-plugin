@@ -1,6 +1,6 @@
 displayName: GeoBlock
 type: middleware
-import: github.com/AikoAppeldorn/geoblock
+import: github.com/leardev/traefik-geoblock-plugin
 summary: Geo-blocking middleware using IPInfo Lite database with automatic updates
 testData:
   allowedCountries:

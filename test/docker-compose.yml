@@ -8,14 +8,14 @@ services:
       - "--entrypoints.web.address=:80"
       - "--entrypoints.web.forwardedHeaders.insecure=true"
       - "--providers.file.filename=/etc/traefik/dynamic.yml"
-      - "--experimental.localPlugins.geoblock.moduleName=github.com/AikoAppeldorn/geoblock"
+      - "--experimental.localPlugins.geoblock.moduleName=github.com/leardev/traefik-geoblock-plugin"
       - "--log.level=DEBUG"
     ports:
       - "80:80"
       - "8080:8080"   # Traefik dashboard
     volumes:
       - ./docker/dynamic.yml:/etc/traefik/dynamic.yml:ro
-      - ./:/plugins-local/src/github.com/AikoAppeldorn/geoblock:ro
+      - ../:/plugins-local/src/github.com/leardev/traefik-geoblock-plugin:ro
       - geoblock-data:/data
     depends_on:
       - whoami

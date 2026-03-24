@@ -7,4 +7,4 @@
 *.tmp
 
 # Local config with token - use dynamic.yml.tpl instead
-docker/dynamic.yml
+test/docker/dynamic.yml
