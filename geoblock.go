@@ -1,6 +1,6 @@
-// Package geoblock is a Traefik middleware plugin that blocks or allows
+// Package traefik_geoblock_plugin is a Traefik middleware plugin that blocks or allows
 // requests based on geographic location using the IPInfo Lite database.
-package geoblock
+package traefik_geoblock_plugin
 
 import (
 	"context"

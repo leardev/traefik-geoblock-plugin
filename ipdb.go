@@ -1,4 +1,4 @@
-package geoblock
+package traefik_geoblock_plugin
 
 import (
 	"bytes"
