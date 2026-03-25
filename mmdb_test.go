@@ -390,6 +390,11 @@ func TestNewValidation_MMDB(t *testing.T) {
 	t.Run("valid mmdb config", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		mmdbPath := filepath.Join(tmpDir, "valid.mmdb")
+		// Pre-write the MMDB file so the updater goroutine loads from disk
+		// and never attempts a download (avoiding a race with srv.Close()).
+		if err := os.WriteFile(mmdbPath, buildTestMMDB(t, mmdbTestEntries), 0600); err != nil {
+			t.Fatal(err)
+		}
 
 		cfg := &Config{
 			AllowedCountries: []string{"DE"},
