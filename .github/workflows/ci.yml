@@ -7,6 +7,9 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   test:
     name: Unit Tests
@@ -17,6 +20,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
+          cache: false
 
       - name: Run tests
         run: go test -v -race -count=1 ./...
