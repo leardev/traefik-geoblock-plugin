@@ -52,7 +52,7 @@ jobs:
           docker compose -f test/docker-compose.yml up -d
           echo "Waiting for Traefik to start and download database..."
           for i in $(seq 1 60); do
-            if docker compose -f test/docker-compose.yml logs traefik 2>&1 | grep -q 'database updated\|loaded database from disk'; then
+            if docker compose -f test/docker-compose.yml logs traefik 2>&1 | grep -q 'database updated\|loaded CSV database from disk'; then
               echo "Database loaded!"
               break
             fi
@@ -138,7 +138,7 @@ jobs:
 
           # Wait for Traefik to load from disk
           for i in $(seq 1 30); do
-            if docker compose -f test/docker-compose.yml logs traefik --since 30s 2>&1 | grep -q 'loaded database from disk'; then
+            if docker compose -f test/docker-compose.yml logs traefik --since 30s 2>&1 | grep -q 'loaded CSV database from disk'; then
               echo "✅ Database loaded from disk cache after restart"
               break
             fi
