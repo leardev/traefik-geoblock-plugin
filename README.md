@@ -31,12 +31,12 @@ For local development, use `localPlugins` instead (see [test/docker-compose.yml]
 
 ### Database backends
 
-The plugin supports two database backends. Set **either** `databasePath` (CSV, default) **or** `databaseMMDBPath` (MMDB) — not both.
+The plugin supports two database backends. Set **either** `databaseMMDBPath` (MMDB, default) **or** `databasePath` (CSV) — not both.
 
 | Backend | Config key | Default path | Memory usage |
 |---------|-----------|--------------|-------------|
-| CSV `.csv.gz` | `databasePath` | `/tmp/ipinfo_lite.csv.gz` | ~150 MB heap per replica |
-| MMDB `.mmdb` | `databaseMMDBPath` | *(none)* | ~50 MB heap per replica |
+| MMDB `.mmdb` | `databaseMMDBPath` | `/tmp/ipinfo_lite.mmdb` | ~50 MB heap per replica |
+| CSV `.csv.gz` | `databasePath` | *(none)* | ~150 MB heap per replica |
 
 The MMDB backend is recommended for production and multi-replica deployments.
 
@@ -47,10 +47,10 @@ The MMDB backend is recommended for production and multi-replica deployments.
 | `allowedCountries`   | `[]string` | —                           | Allowlist of country codes. Mutually exclusive with `blockedCountries`. |
 | `blockedCountries`   | `[]string` | —                           | Blocklist of country codes. Mutually exclusive with `allowedCountries`. |
 | `token`              | `string`   | **required**                | IPInfo API token for downloading the database.                    |
-| `databasePath`       | `string`   | `/tmp/ipinfo_lite.csv.gz`   | Path to cache the gzipped CSV database. Mutually exclusive with `databaseMMDBPath`. |
-| `databaseURL`        | `string`   | *(IPInfo CSV URL)*          | Override the CSV download URL (testing only).                     |
-| `databaseMMDBPath`   | `string`   | —                           | Path to cache the MMDB database. When set, the MMDB backend is used. Mutually exclusive with `databasePath`. |
+| `databaseMMDBPath`   | `string`   | `/tmp/ipinfo_lite.mmdb`     | Path to cache the MMDB database. Mutually exclusive with `databasePath`. |
 | `databaseMMDBURL`    | `string`   | *(IPInfo MMDB URL)*         | Override the MMDB download URL (testing only).                    |
+| `databasePath`       | `string`   | —                           | Path to cache the gzipped CSV database. When set, the CSV backend is used. Mutually exclusive with `databaseMMDBPath`. |
+| `databaseURL`        | `string`   | *(IPInfo CSV URL)*          | Override the CSV download URL (testing only).                     |
 | `updateInterval`     | `int`      | `24`                        | Hours between automatic database refreshes.                       |
 | `allowPrivate`       | `bool`     | `true`                      | Pass through requests from private/reserved IP ranges.            |
 | `defaultAllow`       | `bool`     | `true`                      | Allow requests when the IP is not found or the DB is not loaded.  |

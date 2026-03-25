@@ -110,9 +110,9 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 	if config.DatabasePath != "" && config.DatabaseMMDBPath != "" {
 		return nil, fmt.Errorf("geoblock: cannot set both databasePath and databaseMMDBPath")
 	}
-	// Apply the CSV default only when MMDB is not configured.
+	// Apply the MMDB default only when neither backend is configured.
 	if config.DatabasePath == "" && config.DatabaseMMDBPath == "" {
-		config.DatabasePath = "/tmp/ipinfo_lite.csv.gz"
+		config.DatabaseMMDBPath = "/tmp/ipinfo_lite.mmdb"
 	}
 
 	if config.UpdateInterval <= 0 {

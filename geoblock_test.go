@@ -611,6 +611,7 @@ func TestUpdaterGoroutine(t *testing.T) {
 	handler, err := New(context.Background(), next, &Config{
 		AllowedCountries: []string{"DE"},
 		Token:            "test-token",
+		DatabasePath:     t.TempDir() + "/test.csv.gz",
 		DatabaseURL:      srv.URL,
 		AllowPrivate:     true,
 		DefaultAllow:     false,
