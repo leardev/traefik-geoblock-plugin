@@ -54,6 +54,34 @@ func TestParseCSV(t *testing.T) {
 	}
 }
 
+// TestCSVIPv4OnlyDatabase verifies behaviour when the database contains only IPv4
+// ranges (no IPv6 entries). An IPv6 lookup must return "" without panicking — this
+// exercises the n==0 guard in lookupV6.
+func TestCSVIPv4OnlyDatabase(t *testing.T) {
+	const ipv4Only = `network,country,country_code,continent,continent_code,asn,as_name,as_domain
+8.8.8.0/24,United States,US,North America,NA,AS15169,"Google LLC",google.com
+91.0.0.0/24,Germany,DE,Europe,EU,,,
+`
+	db, err := parseGzippedCSV(buildTestCSVGz(t, ipv4Only))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(db.v4) != 2 {
+		t.Errorf("expected 2 IPv4 ranges, got %d", len(db.v4))
+	}
+	if len(db.v6) != 0 {
+		t.Errorf("expected no IPv6 ranges in IPv4-only DB, got %d", len(db.v6))
+	}
+	// IPv4 lookups still work.
+	if got := db.lookup(net.ParseIP("8.8.8.8")); got != "US" {
+		t.Errorf("lookup(8.8.8.8) = %q, want US", got)
+	}
+	// IPv6 address on an IPv4-only database → "" (exercises lookupV6 n==0 guard).
+	if got := db.lookup(net.ParseIP("2001:4860:4860::8888")); got != "" {
+		t.Errorf("IPv6 lookup on IPv4-only CSV DB = %q, want empty", got)
+	}
+}
+
 // --- Lookup tests ---
 
 func setupTestDB(t *testing.T) *ipDatabase {
@@ -673,5 +701,294 @@ func BenchmarkLookupV6(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		db.lookup(ip)
+	}
+}
+
+// --- MMDB update helpers & tests ---
+
+// serveMockMMDBServer starts an httptest.Server that returns a raw MMDB binary.
+func serveMockMMDBServer(t *testing.T, entries []testMMDBEntry) *httptest.Server {
+	t.Helper()
+	data := buildTestMMDB(t, entries)
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(data)
+	}))
+}
+
+// TestCreateConfig verifies that CreateConfig returns the documented defaults.
+func TestCreateConfig(t *testing.T) {
+	cfg := CreateConfig()
+	if cfg.UpdateInterval != 24 {
+		t.Errorf("UpdateInterval = %d, want 24", cfg.UpdateInterval)
+	}
+	if !cfg.AllowPrivate {
+		t.Error("AllowPrivate should default to true")
+	}
+	if !cfg.DefaultAllow {
+		t.Error("DefaultAllow should default to true")
+	}
+	if cfg.HTTPStatusCode != http.StatusForbidden {
+		t.Errorf("HTTPStatusCode = %d, want %d", cfg.HTTPStatusCode, http.StatusForbidden)
+	}
+	if cfg.DatabasePath != "" {
+		t.Errorf("DatabasePath should be empty by default, got %q", cfg.DatabasePath)
+	}
+}
+
+// TestServeHTTP_NoDBLoaded exercises handleDefault when the database is not yet loaded.
+func TestServeHTTP_NoDBLoaded(t *testing.T) {
+	next := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+
+	t.Run("DefaultAllow=true passes through", func(t *testing.T) {
+		g := &GeoBlock{
+			next:    next,
+			name:    "no-db-allow",
+			config:  &Config{DefaultAllow: true, HTTPStatusCode: http.StatusForbidden},
+			db:      nil,
+			allowed: map[string]struct{}{"DE": {}},
+			done:    make(chan struct{}),
+		}
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "8.8.8.8:1234"
+		rec := httptest.NewRecorder()
+		g.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected 200 with DefaultAllow=true, got %d", rec.Code)
+		}
+	})
+
+	t.Run("DefaultAllow=false blocks", func(t *testing.T) {
+		g := &GeoBlock{
+			next:    next,
+			name:    "no-db-block",
+			config:  &Config{DefaultAllow: false, HTTPStatusCode: http.StatusForbidden},
+			db:      nil,
+			allowed: map[string]struct{}{"DE": {}},
+			done:    make(chan struct{}),
+		}
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "8.8.8.8:1234"
+		rec := httptest.NewRecorder()
+		g.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("expected 403 with DefaultAllow=false, got %d", rec.Code)
+		}
+	})
+}
+
+// TestServeHTTP_UnparsableIP verifies that an unparseable RemoteAddr triggers handleDefault.
+func TestServeHTTP_UnparsableIP(t *testing.T) {
+	next := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+	g := &GeoBlock{
+		next:    next,
+		name:    "bad-ip",
+		config:  &Config{DefaultAllow: true, HTTPStatusCode: http.StatusForbidden},
+		db:      nil,
+		allowed: map[string]struct{}{"DE": {}},
+		done:    make(chan struct{}),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "not-a-valid-ip" // no port, not a valid IP
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 for unparsable IP with DefaultAllow=true, got %d", rec.Code)
+	}
+}
+
+// TestServeHTTP_LogEnabled covers all logging branches in ServeHTTP and handleDefault.
+func TestServeHTTP_LogEnabled(t *testing.T) {
+	db := setupTestDB(t)
+	next := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+	g := &GeoBlock{
+		next:    next,
+		name:    "log-test",
+		config:  &Config{AllowPrivate: true, DefaultAllow: false, HTTPStatusCode: http.StatusForbidden, LogEnabled: true},
+		db:      db,
+		allowed: map[string]struct{}{"DE": {}},
+		done:    make(chan struct{}),
+	}
+
+	// Allowed country — log branch "allowed".
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "91.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 for DE, got %d", rec.Code)
+	}
+
+	// Blocked country — log branch "blocked".
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "8.8.8.8:1234"
+	rec = httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for US, got %d", rec.Code)
+	}
+
+	// No DB — DefaultAllow=false — log branch "default-block".
+	g.db = nil
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "8.8.8.8:1234"
+	rec = httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for no-db default-block, got %d", rec.Code)
+	}
+
+	// No DB — DefaultAllow=true — log branch "default-allow".
+	g.config.DefaultAllow = true
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "8.8.8.8:1234"
+	rec = httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 for no-db default-allow, got %d", rec.Code)
+	}
+}
+
+// TestServeHTTP_CustomStatusCode verifies that HTTPStatusCode is used for blocked requests.
+func TestServeHTTP_CustomStatusCode(t *testing.T) {
+	db := setupTestDB(t)
+	next := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+	const wantCode = http.StatusUnavailableForLegalReasons // 451
+	g := &GeoBlock{
+		next:    next,
+		name:    "custom-status",
+		config:  &Config{AllowPrivate: true, DefaultAllow: false, HTTPStatusCode: wantCode},
+		db:      db,
+		allowed: map[string]struct{}{"DE": {}},
+		done:    make(chan struct{}),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "8.8.8.8:1234" // US — not in allowlist
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+	if rec.Code != wantCode {
+		t.Errorf("expected status %d, got %d", wantCode, rec.Code)
+	}
+}
+
+// TestUpdateMMDB_Success verifies the full MMDB update flow: download raw bytes,
+// persist to disk, parse, and atomically swap the running database.
+func TestUpdateMMDB_Success(t *testing.T) {
+	srv := serveMockMMDBServer(t, mmdbTestEntries)
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	mmdbPath := filepath.Join(tmpDir, "test.mmdb")
+	g := &GeoBlock{
+		name: "mmdb-update-ok",
+		config: &Config{
+			Token:            "test-token",
+			DatabaseMMDBURL:  srv.URL,
+			DatabaseMMDBPath: mmdbPath,
+		},
+		done: make(chan struct{}),
+	}
+
+	g.updateMMDB()
+
+	g.mu.RLock()
+	db := g.db
+	g.mu.RUnlock()
+	if db == nil {
+		t.Fatal("MMDB database should be loaded after a successful update")
+	}
+	if _, err := os.Stat(mmdbPath); err != nil {
+		t.Errorf("MMDB file should exist on disk: %v", err)
+	}
+	if got := db.lookup(net.ParseIP("8.8.8.8")); got != "US" {
+		t.Errorf("lookup(8.8.8.8) = %q, want US", got)
+	}
+}
+
+// TestUpdateMMDB_DownloadFail verifies that a failed MMDB download is handled
+// gracefully — the database remains nil and no panic occurs.
+func TestUpdateMMDB_DownloadFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	g := &GeoBlock{
+		name: "mmdb-dl-fail",
+		config: &Config{
+			Token:            "test",
+			DatabaseMMDBURL:  srv.URL,
+			DatabaseMMDBPath: "/tmp/not-written.mmdb",
+		},
+		done: make(chan struct{}),
+	}
+	g.updateMMDB()
+
+	g.mu.RLock()
+	db := g.db
+	g.mu.RUnlock()
+	if db != nil {
+		t.Error("db should remain nil after a failed download")
+	}
+}
+
+// TestUpdateMMDB_SaveFail verifies that an unwritable MMDB path is handled
+// gracefully — the database remains nil.
+func TestUpdateMMDB_SaveFail(t *testing.T) {
+	srv := serveMockMMDBServer(t, mmdbTestEntries)
+	defer srv.Close()
+
+	g := &GeoBlock{
+		name: "mmdb-save-fail",
+		config: &Config{
+			Token:            "test",
+			DatabaseMMDBURL:  srv.URL,
+			DatabaseMMDBPath: "/nonexistent/directory/test.mmdb",
+		},
+		done: make(chan struct{}),
+	}
+	g.updateMMDB()
+
+	g.mu.RLock()
+	db := g.db
+	g.mu.RUnlock()
+	if db != nil {
+		t.Error("db should remain nil after a save failure")
+	}
+}
+
+// TestUpdateMMDB_ParseFail verifies that garbage bytes that cannot be parsed as MMDB
+// are handled gracefully — the database stays nil even after a successful disk write.
+func TestUpdateMMDB_ParseFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("this is not an mmdb file"))
+	}))
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	g := &GeoBlock{
+		name: "mmdb-parse-fail",
+		config: &Config{
+			Token:            "test",
+			DatabaseMMDBURL:  srv.URL,
+			DatabaseMMDBPath: filepath.Join(tmpDir, "invalid.mmdb"),
+		},
+		done: make(chan struct{}),
+	}
+	g.updateMMDB()
+
+	g.mu.RLock()
+	db := g.db
+	g.mu.RUnlock()
+	if db != nil {
+		t.Error("db should remain nil after MMDB parse failure")
 	}
 }

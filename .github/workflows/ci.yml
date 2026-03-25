@@ -36,7 +36,12 @@ jobs:
           cache: false
 
       - name: Run tests
-        run: go test -v -race -count=1 ./...
+        run: go test -v -race -count=1 -coverprofile=coverage.out ./...
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.out
 
       - name: Run benchmarks
         run: go test -bench=. -benchmem ./...
@@ -89,48 +94,7 @@ jobs:
             echo "Skipped (no token)"
             exit 0
           fi
-
-          PASS=0
-          FAIL=0
-
-          check() {
-            local desc="$1" ip="$2" expected="$3"
-            local code
-            code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: $ip" http://localhost/)
-            if [ "$code" = "$expected" ]; then
-              echo "✅ $desc: $ip -> $code (expected $expected)"
-              PASS=$((PASS + 1))
-            else
-              echo "❌ $desc: $ip -> $code (expected $expected)"
-              FAIL=$((FAIL + 1))
-            fi
-          }
-
-          # Private IP - should be allowed
-          check "Private IP (allow)"       "10.0.0.1"     200
-
-          # German IP - allowed (DE in allowlist)
-          check "German IP (allow)"        "91.0.0.1"     200
-
-          # Austrian IP - allowed (AT in allowlist)
-          check "Austrian IP (allow)"      "77.116.0.1"   200
-
-          # US IP - blocked (not in allowlist)
-          check "US IP (block)"            "8.8.8.8"      403
-
-          # Chinese IP - blocked (not in allowlist)
-          check "Chinese IP (block)"       "1.0.1.1"      403
-
-          # Russian IP - blocked (not in allowlist)
-          check "Russian IP (block)"       "5.3.0.1"      403
-
-          echo ""
-          echo "Results: $PASS passed, $FAIL failed"
-
-          if [ "$FAIL" -gt 0 ]; then
-            docker compose -f test/docker-compose.yml logs traefik | grep geoblock
-            exit 1
-          fi
+          sh test/run-checks.sh || { docker compose -f test/docker-compose.yml logs traefik | grep geoblock; exit 1; }
 
       - name: Test database update
         env:
@@ -228,37 +192,7 @@ jobs:
             echo "Skipped (no token)"
             exit 0
           fi
-
-          PASS=0
-          FAIL=0
-
-          check() {
-            local desc="$1" ip="$2" expected="$3"
-            local code
-            code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: $ip" http://localhost/)
-            if [ "$code" = "$expected" ]; then
-              echo "✅ $desc: $ip -> $code (expected $expected)"
-              PASS=$((PASS + 1))
-            else
-              echo "❌ $desc: $ip -> $code (expected $expected)"
-              FAIL=$((FAIL + 1))
-            fi
-          }
-
-          check "Private IP (allow)"  "10.0.0.1"   200
-          check "German IP (allow)"   "91.0.0.1"   200
-          check "Austrian IP (allow)" "77.116.0.1" 200
-          check "US IP (block)"       "8.8.8.8"    403
-          check "Chinese IP (block)"  "1.0.1.1"    403
-          check "Russian IP (block)"  "5.3.0.1"    403
-
-          echo ""
-          echo "Results: $PASS passed, $FAIL failed"
-
-          if [ "$FAIL" -gt 0 ]; then
-            docker compose -f test/docker-compose.yml logs traefik | grep geoblock
-            exit 1
-          fi
+          sh test/run-checks.sh || { docker compose -f test/docker-compose.yml logs traefik | grep geoblock; exit 1; }
 
       - name: Verify MMDB file on disk
         env:
