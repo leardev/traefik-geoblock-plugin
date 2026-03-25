@@ -44,7 +44,7 @@ func buildTestMMDB(t *testing.T, entries []testMMDBEntry) []byte {
 		}
 	}
 
-	dataSec := []byte{}
+	var dataSec []byte
 	ccOffset := make(map[string]uint32, len(ccOrder))
 	for _, cc := range ccOrder {
 		ccOffset[cc] = uint32(len(dataSec))
@@ -52,71 +52,20 @@ func buildTestMMDB(t *testing.T, entries []testMMDBEntry) []byte {
 	}
 
 	// 2. Build the binary trie.
-	// A node has a left and right child.  Values are:
-	//   >= 0          → child node index
-	//   -(1+dataIdx)  → leaf pointing to dataRecords[dataIdx]
-	//   -1            → empty ("no data")
-	const empty = -1
-	type trieNode struct{ left, right int }
-	nodes := []trieNode{{empty, empty}} // root = node 0
-
+	nodes := []testTrieNode{{-1, -1}} // root = node 0
 	for _, e := range entries {
 		_, cidr, err := net.ParseCIDR(e.cidr)
 		if err != nil {
 			t.Fatalf("invalid CIDR %q: %v", e.cidr, err)
 		}
 		ones, _ := cidr.Mask.Size()
-		cc := strings.ToUpper(e.cc)
-		offset := ccOffset[cc]
-
-		ip := cidr.IP.To4()
-		node := 0
-		for i := 0; i < ones; i++ {
-			bit := int((ip[i/8] >> uint(7-(i%8))) & 1)
-			if i == ones-1 {
-				// Leaf: encode data offset as -(offset+2) so that even offset=0
-				// doesn't collide with empty (-1).
-				leaf := -(int(offset) + 2)
-				if bit == 0 {
-					nodes[node].left = leaf
-				} else {
-					nodes[node].right = leaf
-				}
-			} else {
-				child := nodes[node].left
-				if bit == 1 {
-					child = nodes[node].right
-				}
-				if child == empty || child < -1 {
-					// Allocate a new node.
-					nodes = append(nodes, trieNode{empty, empty})
-					child = len(nodes) - 1
-					if bit == 0 {
-						nodes[node].left = child
-					} else {
-						nodes[node].right = child
-					}
-				}
-				node = child
-			}
-		}
+		trieInsertBits(&nodes, cidr.IP.To4(), ones, int(ccOffset[strings.ToUpper(e.cc)]))
 	}
 
 	nodeCount := uint32(len(nodes))
 
 	// 3. Serialise the search tree (nodeCount × 6 bytes, 24-bit records).
-	treeSec := make([]byte, nodeCount*6)
-	for i, n := range nodes {
-		left := resolveMMDBRef(n.left, nodeCount)
-		right := resolveMMDBRef(n.right, nodeCount)
-		off := i * 6
-		treeSec[off+0] = byte(left >> 16)
-		treeSec[off+1] = byte(left >> 8)
-		treeSec[off+2] = byte(left)
-		treeSec[off+3] = byte(right >> 16)
-		treeSec[off+4] = byte(right >> 8)
-		treeSec[off+5] = byte(right)
-	}
+	treeSec := serializeTestTree(t, nodes, 24)
 
 	// 4. Metadata section.
 	metaSec := mmdbTestEncodeMetadata(nodeCount, 24, 4)
@@ -166,6 +115,71 @@ func mmdbTestEncodeMetadata(nodeCount, recordSize, ipVersion uint32) []byte {
 	buf = append(buf, mmdbTestEncodeString("ip_version")...)
 	buf = append(buf, mmdbTestEncodeUint32(ipVersion)...)
 	return buf
+}
+
+// testTrieNode is a binary trie node used when building test MMDB binaries.
+type testTrieNode struct{ left, right int }
+
+// trieInsertBits inserts one IP prefix into the trie.
+// ip contains the prefix bytes; ones is the prefix length; dataOffset is the
+// byte offset of the corresponding record in the MMDB data section.
+func trieInsertBits(nodes *[]testTrieNode, ip []byte, ones, dataOffset int) {
+	const empty = -1
+	leaf := -(dataOffset + 2)
+	node := 0
+	for i := 0; i < ones; i++ {
+		bit := int((ip[i/8] >> uint(7-(i%8))) & 1)
+		if i == ones-1 {
+			if bit == 0 {
+				(*nodes)[node].left = leaf
+			} else {
+				(*nodes)[node].right = leaf
+			}
+		} else {
+			child := (*nodes)[node].left
+			if bit == 1 {
+				child = (*nodes)[node].right
+			}
+			if child == empty || child < -1 {
+				*nodes = append(*nodes, testTrieNode{empty, empty})
+				child = len(*nodes) - 1
+				if bit == 0 {
+					(*nodes)[node].left = child
+				} else {
+					(*nodes)[node].right = child
+				}
+			}
+			node = child
+		}
+	}
+}
+
+// serializeTestTree encodes nodes into the MMDB binary search-tree format.
+// recordSize must be 24 or 32.
+func serializeTestTree(t *testing.T, nodes []testTrieNode, recordSize uint32) []byte {
+	t.Helper()
+	nodeCount := uint32(len(nodes))
+	resolve := func(ref int) uint32 { return resolveMMDBRef(ref, nodeCount) }
+	switch recordSize {
+	case 24:
+		b := make([]byte, nodeCount*6)
+		for i, n := range nodes {
+			l, r := resolve(n.left), resolve(n.right)
+			b[i*6+0], b[i*6+1], b[i*6+2] = byte(l>>16), byte(l>>8), byte(l)
+			b[i*6+3], b[i*6+4], b[i*6+5] = byte(r>>16), byte(r>>8), byte(r)
+		}
+		return b
+	case 32:
+		b := make([]byte, nodeCount*8)
+		for i, n := range nodes {
+			binary.BigEndian.PutUint32(b[i*8:], resolve(n.left))
+			binary.BigEndian.PutUint32(b[i*8+4:], resolve(n.right))
+		}
+		return b
+	default:
+		t.Fatalf("unsupported record size: %d", recordSize)
+		return nil
+	}
 }
 
 // resolveMMDBRef converts a trie node reference to the MMDB uint32 record value.
@@ -439,94 +453,25 @@ func buildTestMMDBImpl(
 			ccOrder = append(ccOrder, cc)
 		}
 	}
-	dataSec := []byte{}
+	var dataSec []byte
 	ccOffset := make(map[string]uint32, len(ccOrder))
 	for _, cc := range ccOrder {
 		ccOffset[cc] = uint32(len(dataSec))
 		dataSec = append(dataSec, encodeRecord(cc)...)
 	}
 
-	const empty = -1
-	type trieNode struct{ left, right int }
-	nodes := []trieNode{{empty, empty}}
-
+	nodes := []testTrieNode{{-1, -1}}
 	for _, e := range entries {
 		_, cidr, err := net.ParseCIDR(e.cidr)
 		if err != nil {
 			t.Fatalf("invalid CIDR %q: %v", e.cidr, err)
 		}
 		ones, _ := cidr.Mask.Size()
-		cc := strings.ToUpper(e.cc)
-		offset := ccOffset[cc]
-		ip := cidr.IP.To4()
-		node := 0
-		for i := 0; i < ones; i++ {
-			bit := int((ip[i/8] >> uint(7-(i%8))) & 1)
-			if i == ones-1 {
-				leaf := -(int(offset) + 2)
-				if bit == 0 {
-					nodes[node].left = leaf
-				} else {
-					nodes[node].right = leaf
-				}
-			} else {
-				child := nodes[node].left
-				if bit == 1 {
-					child = nodes[node].right
-				}
-				if child == empty || child < -1 {
-					nodes = append(nodes, trieNode{empty, empty})
-					child = len(nodes) - 1
-					if bit == 0 {
-						nodes[node].left = child
-					} else {
-						nodes[node].right = child
-					}
-				}
-				node = child
-			}
-		}
+		trieInsertBits(&nodes, cidr.IP.To4(), ones, int(ccOffset[strings.ToUpper(e.cc)]))
 	}
 
+	treeSec := serializeTestTree(t, nodes, recordSize)
 	nodeCount := uint32(len(nodes))
-	resolveRef := func(ref int) uint32 {
-		if ref == empty {
-			return nodeCount
-		}
-		if ref < -1 {
-			return nodeCount + 16 + uint32(-(ref + 2))
-		}
-		return uint32(ref)
-	}
-
-	var treeSec []byte
-	switch recordSize {
-	case 24:
-		treeSec = make([]byte, nodeCount*6)
-		for i, n := range nodes {
-			left := resolveRef(n.left)
-			right := resolveRef(n.right)
-			off := i * 6
-			treeSec[off+0] = byte(left >> 16)
-			treeSec[off+1] = byte(left >> 8)
-			treeSec[off+2] = byte(left)
-			treeSec[off+3] = byte(right >> 16)
-			treeSec[off+4] = byte(right >> 8)
-			treeSec[off+5] = byte(right)
-		}
-	case 32:
-		treeSec = make([]byte, nodeCount*8)
-		for i, n := range nodes {
-			left := resolveRef(n.left)
-			right := resolveRef(n.right)
-			off := i * 8
-			binary.BigEndian.PutUint32(treeSec[off:], left)
-			binary.BigEndian.PutUint32(treeSec[off+4:], right)
-		}
-	default:
-		t.Fatalf("unsupported record size: %d", recordSize)
-	}
-
 	metaSec := encodeMeta(nodeCount, recordSize, 4)
 	var out []byte
 	out = append(out, treeSec...)
@@ -974,75 +919,32 @@ func buildTestMMDBIPv6(t *testing.T, ipv4Entries, ipv6Entries []testMMDBEntry) [
 	// Collect unique country codes and build the data section.
 	ccOrder := make([]string, 0)
 	ccSet := make(map[string]bool)
-	addCC := func(cc string) {
-		cc = strings.ToUpper(cc)
+	for _, e := range append(ipv4Entries, ipv6Entries...) {
+		cc := strings.ToUpper(e.cc)
 		if !ccSet[cc] {
 			ccSet[cc] = true
 			ccOrder = append(ccOrder, cc)
 		}
 	}
-	for _, e := range ipv4Entries {
-		addCC(e.cc)
-	}
-	for _, e := range ipv6Entries {
-		addCC(e.cc)
-	}
-	dataSec := []byte{}
+	var dataSec []byte
 	ccOffset := make(map[string]uint32, len(ccOrder))
 	for _, cc := range ccOrder {
 		ccOffset[cc] = uint32(len(dataSec))
 		dataSec = append(dataSec, mmdbTestEncodeCountryRecord(cc)...)
 	}
 
-	const empty = -1
-	type trieNode struct{ left, right int }
-	nodes := []trieNode{{empty, empty}}
+	nodes := []testTrieNode{{-1, -1}}
 
-	// insert adds a 128-bit prefix to the trie.
-	insert := func(ip16 [16]byte, ones int, cc string) {
-		offset := ccOffset[strings.ToUpper(cc)]
-		node := 0
-		for i := 0; i < ones; i++ {
-			byteIdx := i / 8
-			bitIdx := 7 - (i % 8)
-			bit := int((ip16[byteIdx] >> uint(bitIdx)) & 1)
-			if i == ones-1 {
-				leaf := -(int(offset) + 2)
-				if bit == 0 {
-					nodes[node].left = leaf
-				} else {
-					nodes[node].right = leaf
-				}
-			} else {
-				child := nodes[node].left
-				if bit == 1 {
-					child = nodes[node].right
-				}
-				if child == empty || child < -1 {
-					nodes = append(nodes, trieNode{empty, empty})
-					child = len(nodes) - 1
-					if bit == 0 {
-						nodes[node].left = child
-					} else {
-						nodes[node].right = child
-					}
-				}
-				node = child
-			}
-		}
-	}
-
-	// IPv4 CIDRs: encoded as ::x.x.x.x → 96 zero bits then 32 IPv4 bits.
+	// IPv4 CIDRs: encoded as ::x.x.x.x — 96 zero bits then 32 IPv4 bits.
 	for _, e := range ipv4Entries {
 		_, cidr, err := net.ParseCIDR(e.cidr)
 		if err != nil {
 			t.Fatalf("invalid CIDR %q: %v", e.cidr, err)
 		}
 		ones, _ := cidr.Mask.Size()
-		ip4 := cidr.IP.To4()
 		var ip16 [16]byte
-		copy(ip16[12:], ip4) // bytes 0-11 remain zero
-		insert(ip16, 96+ones, e.cc)
+		copy(ip16[12:], cidr.IP.To4())
+		trieInsertBits(&nodes, ip16[:], 96+ones, int(ccOffset[strings.ToUpper(e.cc)]))
 	}
 
 	// Native IPv6 CIDRs.
@@ -1054,34 +956,11 @@ func buildTestMMDBIPv6(t *testing.T, ipv4Entries, ipv6Entries []testMMDBEntry) [
 		ones, _ := cidr.Mask.Size()
 		var ip16 [16]byte
 		copy(ip16[:], cidr.IP.To16())
-		insert(ip16, ones, e.cc)
+		trieInsertBits(&nodes, ip16[:], ones, int(ccOffset[strings.ToUpper(e.cc)]))
 	}
 
+	treeSec := serializeTestTree(t, nodes, 24)
 	nodeCount := uint32(len(nodes))
-	resolveRef := func(ref int) uint32 {
-		if ref == empty {
-			return nodeCount
-		}
-		if ref < -1 {
-			return nodeCount + 16 + uint32(-(ref + 2))
-		}
-		return uint32(ref)
-	}
-
-	// Serialise with 24-bit records (nodeCount well within 2^24 for test data).
-	treeSec := make([]byte, nodeCount*6)
-	for i, n := range nodes {
-		left := resolveRef(n.left)
-		right := resolveRef(n.right)
-		off := i * 6
-		treeSec[off+0] = byte(left >> 16)
-		treeSec[off+1] = byte(left >> 8)
-		treeSec[off+2] = byte(left)
-		treeSec[off+3] = byte(right >> 16)
-		treeSec[off+4] = byte(right >> 8)
-		treeSec[off+5] = byte(right)
-	}
-
 	metaSec := mmdbTestEncodeMetadata(nodeCount, 24, 6) // ipVersion=6
 	var out []byte
 	out = append(out, treeSec...)

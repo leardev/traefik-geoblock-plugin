@@ -162,15 +162,21 @@ func buildCountrySet(countries []string) map[string]struct{} {
 // loadCachedDB tries to load a previously cached database file from disk.
 func (g *GeoBlock) loadCachedDB() {
 	if g.config.DatabaseMMDBPath != "" {
-		if mmdb, err := openMMDB(g.config.DatabaseMMDBPath); err == nil {
-			g.db = mmdb
-			g.logf("loaded MMDB database from disk")
+		mmdb, err := openMMDB(g.config.DatabaseMMDBPath)
+		if err != nil {
+			g.logf("could not load MMDB from disk (will download): %v", err)
+			return
 		}
+		g.db = mmdb
+		g.logf("loaded MMDB database from disk")
 	} else if g.config.DatabasePath != "" {
-		if db, err := loadDatabaseFromDisk(g.config.DatabasePath); err == nil {
-			g.db = db
-			g.logf("loaded CSV database from disk: %d IPv4, %d IPv6 ranges", len(db.v4), len(db.v6))
+		db, err := loadDatabaseFromDisk(g.config.DatabasePath)
+		if err != nil {
+			g.logf("could not load CSV from disk (will download): %v", err)
+			return
 		}
+		g.db = db
+		g.logf("loaded CSV database from disk: %d IPv4, %d IPv6 ranges", len(db.v4), len(db.v6))
 	}
 }
 
