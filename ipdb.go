@@ -110,16 +110,7 @@ func parseCSV(r io.Reader) (*ipDatabase, error) {
 		return nil, fmt.Errorf("reading header: %w", err)
 	}
 
-	networkIdx, countryCodeIdx := -1, -1
-	for i, col := range header {
-		switch strings.TrimSpace(strings.ToLower(col)) {
-		case "network":
-			networkIdx = i
-		case "country_code":
-			countryCodeIdx = i
-		}
-	}
-
+	networkIdx, countryCodeIdx := findCSVColumns(header)
 	if networkIdx == -1 || countryCodeIdx == -1 {
 		return nil, fmt.Errorf("missing required columns (need network, country_code); got: %s", strings.Join(header, ", "))
 	}
@@ -161,30 +152,7 @@ func parseCSV(r io.Reader) (*ipDatabase, error) {
 		var cc [2]byte
 		cc[0] = country[0]
 		cc[1] = country[1]
-
-		startIP := cidr.IP
-		endIP := lastIP(cidr)
-
-		if v4Start := startIP.To4(); v4Start != nil {
-			v4End := endIP.To4()
-			if v4End == nil {
-				continue
-			}
-			db.v4 = append(db.v4, ipv4Range{
-				start:   ipToUint32(v4Start),
-				end:     ipToUint32(v4End),
-				country: cc,
-			})
-		} else {
-			var s, e [16]byte
-			copy(s[:], startIP.To16())
-			copy(e[:], endIP.To16())
-			db.v6 = append(db.v6, ipv6Range{
-				start:   s,
-				end:     e,
-				country: cc,
-			})
-		}
+		appendIPRange(db, cidr, cc)
 	}
 
 	sort.Slice(db.v4, func(i, j int) bool {
@@ -195,6 +163,47 @@ func parseCSV(r io.Reader) (*ipDatabase, error) {
 	})
 
 	return db, nil
+}
+
+// findCSVColumns scans the CSV header row and returns the zero-based indices of
+// the "network" and "country_code" columns. Returns -1 for any column not found.
+func findCSVColumns(header []string) (networkIdx, countryCodeIdx int) {
+	networkIdx, countryCodeIdx = -1, -1
+	for i, col := range header {
+		switch strings.TrimSpace(strings.ToLower(col)) {
+		case "network":
+			networkIdx = i
+		case "country_code":
+			countryCodeIdx = i
+		}
+	}
+	return
+}
+
+// appendIPRange adds the CIDR range with the given country code to db.
+func appendIPRange(db *ipDatabase, cidr *net.IPNet, cc [2]byte) {
+	startIP := cidr.IP
+	endIP := lastIP(cidr)
+	if v4Start := startIP.To4(); v4Start != nil {
+		v4End := endIP.To4()
+		if v4End == nil {
+			return
+		}
+		db.v4 = append(db.v4, ipv4Range{
+			start:   ipToUint32(v4Start),
+			end:     ipToUint32(v4End),
+			country: cc,
+		})
+	} else {
+		var s, e [16]byte
+		copy(s[:], startIP.To16())
+		copy(e[:], endIP.To16())
+		db.v6 = append(db.v6, ipv6Range{
+			start:   s,
+			end:     e,
+			country: cc,
+		})
+	}
 }
 
 // lastIP returns the last (broadcast) IP in a CIDR network.

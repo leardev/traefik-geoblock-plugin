@@ -97,22 +97,8 @@ type GeoBlock struct {
 
 // New creates a new GeoBlock middleware instance.
 func New(_ context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
-	if len(config.AllowedCountries) > 0 && len(config.BlockedCountries) > 0 {
-		return nil, fmt.Errorf("geoblock: cannot set both allowedCountries and blockedCountries")
-	}
-	if len(config.AllowedCountries) == 0 && len(config.BlockedCountries) == 0 {
-		return nil, fmt.Errorf("geoblock: must set either allowedCountries or blockedCountries")
-	}
-	if config.Token == "" {
-		return nil, fmt.Errorf("geoblock: token is required")
-	}
-
-	if config.DatabasePath != "" && config.DatabaseMMDBPath != "" {
-		return nil, fmt.Errorf("geoblock: cannot set both databasePath and databaseMMDBPath")
-	}
-	// Apply the MMDB default only when neither backend is configured.
-	if config.DatabasePath == "" && config.DatabaseMMDBPath == "" {
-		config.DatabaseMMDBPath = "/tmp/ipinfo_lite.mmdb"
+	if err := validateConfig(config); err != nil {
+		return nil, err
 	}
 
 	if config.UpdateInterval <= 0 {
@@ -123,41 +109,69 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 	}
 
 	g := &GeoBlock{
-		next:   next,
-		name:   name,
-		config: config,
-		done:   make(chan struct{}),
+		next:    next,
+		name:    name,
+		config:  config,
+		done:    make(chan struct{}),
+		allowed: buildCountrySet(config.AllowedCountries),
+		blocked: buildCountrySet(config.BlockedCountries),
 	}
 
-	if len(config.AllowedCountries) > 0 {
-		g.allowed = make(map[string]struct{}, len(config.AllowedCountries))
-		for _, c := range config.AllowedCountries {
-			g.allowed[strings.ToUpper(strings.TrimSpace(c))] = struct{}{}
-		}
-	}
-	if len(config.BlockedCountries) > 0 {
-		g.blocked = make(map[string]struct{}, len(config.BlockedCountries))
-		for _, c := range config.BlockedCountries {
-			g.blocked[strings.ToUpper(strings.TrimSpace(c))] = struct{}{}
-		}
-	}
-
-	// Try loading cached database from disk.
-	if config.DatabaseMMDBPath != "" {
-		if mmdb, err := openMMDB(config.DatabaseMMDBPath); err == nil {
-			g.db = mmdb
-			g.logf("loaded MMDB database from disk")
-		}
-	} else if config.DatabasePath != "" {
-		if db, err := loadDatabaseFromDisk(config.DatabasePath); err == nil {
-			g.db = db
-			g.logf("loaded CSV database from disk: %d IPv4, %d IPv6 ranges", len(db.v4), len(db.v6))
-		}
-	}
+	g.loadCachedDB()
 
 	go g.updater()
 
 	return g, nil
+}
+
+// validateConfig checks that the configuration is self-consistent and applies
+// the default database path when neither backend is explicitly configured.
+func validateConfig(config *Config) error {
+	if len(config.AllowedCountries) > 0 && len(config.BlockedCountries) > 0 {
+		return fmt.Errorf("geoblock: cannot set both allowedCountries and blockedCountries")
+	}
+	if len(config.AllowedCountries) == 0 && len(config.BlockedCountries) == 0 {
+		return fmt.Errorf("geoblock: must set either allowedCountries or blockedCountries")
+	}
+	if config.Token == "" {
+		return fmt.Errorf("geoblock: token is required")
+	}
+	if config.DatabasePath != "" && config.DatabaseMMDBPath != "" {
+		return fmt.Errorf("geoblock: cannot set both databasePath and databaseMMDBPath")
+	}
+	// Apply the MMDB default only when neither backend is configured.
+	if config.DatabasePath == "" && config.DatabaseMMDBPath == "" {
+		config.DatabaseMMDBPath = "/tmp/ipinfo_lite.mmdb"
+	}
+	return nil
+}
+
+// buildCountrySet converts a slice of country codes into a lookup set.
+// Returns nil for an empty slice.
+func buildCountrySet(countries []string) map[string]struct{} {
+	if len(countries) == 0 {
+		return nil
+	}
+	m := make(map[string]struct{}, len(countries))
+	for _, c := range countries {
+		m[strings.ToUpper(strings.TrimSpace(c))] = struct{}{}
+	}
+	return m
+}
+
+// loadCachedDB tries to load a previously cached database file from disk.
+func (g *GeoBlock) loadCachedDB() {
+	if g.config.DatabaseMMDBPath != "" {
+		if mmdb, err := openMMDB(g.config.DatabaseMMDBPath); err == nil {
+			g.db = mmdb
+			g.logf("loaded MMDB database from disk")
+		}
+	} else if g.config.DatabasePath != "" {
+		if db, err := loadDatabaseFromDisk(g.config.DatabasePath); err == nil {
+			g.db = db
+			g.logf("loaded CSV database from disk: %d IPv4, %d IPv6 ranges", len(db.v4), len(db.v6))
+		}
+	}
 }
 
 // ServeHTTP handles an incoming HTTP request.

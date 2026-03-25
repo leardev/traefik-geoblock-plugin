@@ -104,25 +104,11 @@ func buildTestMMDB(t *testing.T, entries []testMMDBEntry) []byte {
 
 	nodeCount := uint32(len(nodes))
 
-	// Helper: convert a node reference to the MMDB uint32 value.
-	resolveRef := func(ref int) uint32 {
-		if ref == empty {
-			return nodeCount // "no data" per MMDB spec
-		}
-		if ref < -1 {
-			// Data pointer: ref = -(offset+2) → offset = -(ref+2)
-			dataRecOffset := uint32(-(ref + 2))
-			// In MMDB: data pointer value = nodeCount + 16 + dataRecOffset
-			return nodeCount + 16 + dataRecOffset
-		}
-		return uint32(ref)
-	}
-
 	// 3. Serialise the search tree (nodeCount × 6 bytes, 24-bit records).
 	treeSec := make([]byte, nodeCount*6)
 	for i, n := range nodes {
-		left := resolveRef(n.left)
-		right := resolveRef(n.right)
+		left := resolveMMDBRef(n.left, nodeCount)
+		right := resolveMMDBRef(n.right, nodeCount)
 		off := i * 6
 		treeSec[off+0] = byte(left >> 16)
 		treeSec[off+1] = byte(left >> 8)
@@ -180,6 +166,19 @@ func mmdbTestEncodeMetadata(nodeCount, recordSize, ipVersion uint32) []byte {
 	buf = append(buf, mmdbTestEncodeString("ip_version")...)
 	buf = append(buf, mmdbTestEncodeUint32(ipVersion)...)
 	return buf
+}
+
+// resolveMMDBRef converts a trie node reference to the MMDB uint32 record value.
+// ref == -1 means "no data" (maps to nodeCount); ref < -1 is a data pointer.
+func resolveMMDBRef(ref int, nodeCount uint32) uint32 {
+	if ref == -1 {
+		return nodeCount // "no data" per MMDB spec
+	}
+	if ref < -1 {
+		// Data pointer: ref = -(offset+2) → offset = -(ref+2)
+		return nodeCount + 16 + uint32(-(ref + 2))
+	}
+	return uint32(ref)
 }
 
 // ---- Tests ----
@@ -495,7 +494,7 @@ func buildTestMMDBImpl(
 			return nodeCount
 		}
 		if ref < -1 {
-			return nodeCount + 16 + uint32(-(ref+2))
+			return nodeCount + 16 + uint32(-(ref + 2))
 		}
 		return uint32(ref)
 	}
@@ -591,15 +590,15 @@ func buildTestMMDBWithPointer(t *testing.T) []byte {
 	// Data section layout:
 	//   offset 0: shared "DE" string encoded as MMDB UTF-8 string  [0x42,'D','E']
 	//   offset 3: record: map{1}, key="country_code", value=pointer-to-offset-0
-	sharedDE := mmdbTestEncodeString("DE")        // 3 bytes at data offset 0
-	ptrToDE := mmdbTestEncodePointer(0)           // 2 bytes – points to data offset 0
+	sharedDE := mmdbTestEncodeString("DE") // 3 bytes at data offset 0
+	ptrToDE := mmdbTestEncodePointer(0)    // 2 bytes – points to data offset 0
 
 	var dataSec []byte
-	dataSec = append(dataSec, sharedDE...)        // shared string at offset 0
-	recOffset := uint32(len(dataSec))             // = 3
-	dataSec = append(dataSec, 0xe1)               // map{1 entry}
+	dataSec = append(dataSec, sharedDE...) // shared string at offset 0
+	recOffset := uint32(len(dataSec))      // = 3
+	dataSec = append(dataSec, 0xe1)        // map{1 entry}
 	dataSec = append(dataSec, mmdbTestEncodeString("country_code")...)
-	dataSec = append(dataSec, ptrToDE...)         // pointer value → "DE"
+	dataSec = append(dataSec, ptrToDE...) // pointer value → "DE"
 
 	// Build trie: 91.0.0.0/24 maps to the record at recOffset.
 	const empty = -1
@@ -640,7 +639,7 @@ func buildTestMMDBWithPointer(t *testing.T) []byte {
 			return nodeCount
 		}
 		if ref < -1 {
-			return nodeCount + 16 + uint32(-(ref+2))
+			return nodeCount + 16 + uint32(-(ref + 2))
 		}
 		return uint32(ref)
 	}
@@ -898,7 +897,7 @@ func buildTestMMDBWithAbsolutePointer(t *testing.T) []byte {
 			return nodeCount
 		}
 		if ref < -1 {
-			return nodeCount + 16 + uint32(-(ref+2))
+			return nodeCount + 16 + uint32(-(ref + 2))
 		}
 		return uint32(ref)
 	}
@@ -1064,7 +1063,7 @@ func buildTestMMDBIPv6(t *testing.T, ipv4Entries, ipv6Entries []testMMDBEntry) [
 			return nodeCount
 		}
 		if ref < -1 {
-			return nodeCount + 16 + uint32(-(ref+2))
+			return nodeCount + 16 + uint32(-(ref + 2))
 		}
 		return uint32(ref)
 	}

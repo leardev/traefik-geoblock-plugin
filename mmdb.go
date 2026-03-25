@@ -330,50 +330,16 @@ func decodeMMDBMetadata(data []byte, start uint32) (nodeCount, recordSize, ipVer
 	count := uint32(ctrl & 0x1f)
 
 	for i := uint32(0); i < count; i++ {
-		if pos >= uint32(len(data)) {
+		k, vStart, vtyp, vsz, next, ok := readMetaKV(data, pos)
+		if !ok {
 			break
 		}
-		// Key is always a short UTF-8 string in MMDB metadata.
-		kctrl := data[pos]
-		pos++
-		if kctrl>>5 != 2 {
-			break
-		}
-		ksz := uint32(kctrl & 0x1f)
-		if pos+ksz > uint32(len(data)) {
-			break
-		}
-		k := string(data[pos : pos+ksz])
-		pos += ksz
-
-		// Value.
-		if pos >= uint32(len(data)) {
-			break
-		}
-		vStart := pos
-		vctrl := data[pos]
-		pos++
-		vtyp := uint32(vctrl >> 5)
-		vsz := uint32(vctrl & 0x1f)
-
-		if vtyp == 0 { // extended type
-			if pos >= uint32(len(data)) {
-				break
-			}
-			vtyp = uint32(data[pos]) + 7
-			pos++
-		}
+		pos = next
 
 		switch vtyp {
 		case 5, 6: // uint16 or uint32 — our three target fields are always one of these
-			var v uint32
-			for j := uint32(0); j < vsz; j++ {
-				if pos >= uint32(len(data)) {
-					break
-				}
-				v = v<<8 | uint32(data[pos])
-				pos++
-			}
+			v := readMetaUint(data, pos, vsz)
+			pos += vsz
 			switch k {
 			case "node_count":
 				nodeCount = v
@@ -395,6 +361,57 @@ func decodeMMDBMetadata(data []byte, start uint32) (nodeCount, recordSize, ipVer
 		return 0, 0, 0, fmt.Errorf("mmdb: incomplete metadata: nodeCount=%d recordSize=%d ipVersion=%d", nodeCount, recordSize, ipVersion)
 	}
 	return nodeCount, recordSize, ipVersion, nil
+}
+
+// readMetaKV reads one key-value header from the MMDB metadata map at pos.
+// Returns the key string, the offset of the value start, the value type and
+// raw size field, the position after the header bytes, and whether parsing
+// succeeded. The caller is responsible for consuming the value payload.
+func readMetaKV(data []byte, pos uint32) (k string, vStart, vtyp, vsz, next uint32, ok bool) {
+	n := uint32(len(data))
+	if pos >= n {
+		return "", 0, 0, 0, 0, false
+	}
+	// Key is always a short UTF-8 string in MMDB metadata.
+	kctrl := data[pos]
+	pos++
+	if kctrl>>5 != 2 {
+		return "", 0, 0, 0, 0, false
+	}
+	ksz := uint32(kctrl & 0x1f)
+	if pos+ksz > n {
+		return "", 0, 0, 0, 0, false
+	}
+	k = string(data[pos : pos+ksz])
+	pos += ksz
+
+	if pos >= n {
+		return "", 0, 0, 0, 0, false
+	}
+	vStart = pos
+	vctrl := data[pos]
+	pos++
+	vtyp = uint32(vctrl >> 5)
+	vsz = uint32(vctrl & 0x1f)
+
+	if vtyp == 0 { // extended type
+		if pos >= n {
+			return "", 0, 0, 0, 0, false
+		}
+		vtyp = uint32(data[pos]) + 7
+		pos++
+	}
+	return k, vStart, vtyp, vsz, pos, true
+}
+
+// readMetaUint reads vsz big-endian bytes from data starting at pos and
+// returns them as a uint32.
+func readMetaUint(data []byte, pos, vsz uint32) uint32 {
+	var v uint32
+	for j := uint32(0); j < vsz && pos+j < uint32(len(data)); j++ {
+		v = v<<8 | uint32(data[pos+j])
+	}
+	return v
 }
 
 // skipMetaValue advances past one MMDB value in data starting at pos.
@@ -419,25 +436,7 @@ func skipMetaValue(data []byte, pos uint32) uint32 {
 		pos++
 	}
 
-	if sz == 29 {
-		if pos >= uint32(len(data)) {
-			return 0
-		}
-		sz = 29 + uint32(data[pos])
-		pos++
-	} else if sz == 30 {
-		if pos+1 >= uint32(len(data)) {
-			return 0
-		}
-		sz = 285 + uint32(data[pos])<<8 | uint32(data[pos+1])
-		pos += 2
-	} else if sz == 31 {
-		if pos+2 >= uint32(len(data)) {
-			return 0
-		}
-		sz = 65821 + uint32(data[pos])<<16 | uint32(data[pos+1])<<8 | uint32(data[pos+2])
-		pos += 3
-	}
+	sz, pos = decodeMetaSize(data, sz, pos)
 
 	switch typ {
 	case 2, 4: // string, bytes
@@ -468,4 +467,27 @@ func skipMetaValue(data []byte, pos uint32) uint32 {
 		return pos
 	}
 	return 0
+}
+
+// decodeMetaSize handles MMDB field size extensions for sz values 29, 30, and 31.
+// Returns the decoded size and the updated position.
+func decodeMetaSize(data []byte, sz, pos uint32) (uint32, uint32) {
+	switch sz {
+	case 29:
+		if pos < uint32(len(data)) {
+			sz = 29 + uint32(data[pos])
+			pos++
+		}
+	case 30:
+		if pos+1 < uint32(len(data)) {
+			sz = 285 + uint32(data[pos])<<8 | uint32(data[pos+1])
+			pos += 2
+		}
+	case 31:
+		if pos+2 < uint32(len(data)) {
+			sz = 65821 + uint32(data[pos])<<16 | uint32(data[pos+1])<<8 | uint32(data[pos+2])
+			pos += 3
+		}
+	}
+	return sz, pos
 }
