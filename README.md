@@ -26,7 +26,7 @@ experimental:
   plugins:
     geoblock:
       moduleName: github.com/leardev/traefik-geoblock-plugin
-      version: v0.1.1
+      version: v0.1.3
 ```
 
 ### Traefik 3.5+ — unsafe (local) plugin mode
