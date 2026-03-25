@@ -97,6 +97,7 @@ type GeoBlock struct {
 
 // New creates a new GeoBlock middleware instance.
 func New(_ context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
+	logger.Printf("[geoblock:%s] initializing", name)
 	if err := validateConfig(config); err != nil {
 		return nil, err
 	}

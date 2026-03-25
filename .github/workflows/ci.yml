@@ -118,11 +118,18 @@ jobs:
           RESTART_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           docker compose -f test/docker-compose.yml restart traefik
 
+          echo "Verifying database file is still present after restart..."
+          docker compose -f test/docker-compose.yml exec -T traefik ls -lh /data/ipinfo_lite.csv.gz || {
+            echo "❌ Database file missing after restart"
+            exit 1
+          }
+
           # Wait for geo-blocking to be active again — more reliable than grepping logs.
           READY=0
-          for i in $(seq 1 30); do
-            CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: 8.8.8.8" http://localhost/ 2>/dev/null || echo 000)
-            if [ "$CODE" = "403" ]; then
+          LAST_CODE=000
+          for i in $(seq 1 60); do
+            LAST_CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: 8.8.8.8" http://localhost/ 2>/dev/null || echo 000)
+            if [ "$LAST_CODE" = "403" ]; then
               echo "✅ Geo-blocking active after restart (US IP blocked)"
               READY=1
               break
@@ -131,8 +138,9 @@ jobs:
           done
 
           if [ "$READY" -eq 0 ]; then
-            echo "❌ Timed out waiting for geo-blocking after restart"
-            docker compose -f test/docker-compose.yml logs traefik --since "$RESTART_AT" 2>&1 | grep geoblock || true
+            echo "❌ Timed out waiting for geo-blocking after restart (last HTTP code: $LAST_CODE)"
+            echo "--- Traefik logs since restart ---"
+            docker compose -f test/docker-compose.yml logs traefik --since "$RESTART_AT" 2>&1 || true
             exit 1
           fi
 
@@ -208,10 +216,17 @@ jobs:
           RESTART_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           docker compose -f test/docker-compose.yml restart traefik
 
+          echo "Verifying MMDB file is still present after restart..."
+          docker compose -f test/docker-compose.yml exec -T traefik ls -lh /data/ipinfo_lite.mmdb || {
+            echo "❌ MMDB file missing after restart"
+            exit 1
+          }
+
           READY=0
-          for i in $(seq 1 30); do
-            CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: 8.8.8.8" http://localhost/ 2>/dev/null || echo 000)
-            if [ "$CODE" = "403" ]; then
+          LAST_CODE=000
+          for i in $(seq 1 60); do
+            LAST_CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: 8.8.8.8" http://localhost/ 2>/dev/null || echo 000)
+            if [ "$LAST_CODE" = "403" ]; then
               echo "✅ Geo-blocking active after MMDB restart (US IP blocked)"
               READY=1
               break
@@ -220,8 +235,9 @@ jobs:
           done
 
           if [ "$READY" -eq 0 ]; then
-            echo "❌ Timed out waiting for geo-blocking after MMDB restart"
-            docker compose -f test/docker-compose.yml logs traefik --since "$RESTART_AT" 2>&1 | grep geoblock || true
+            echo "❌ Timed out waiting for geo-blocking after MMDB restart (last HTTP code: $LAST_CODE)"
+            echo "--- Traefik logs since restart ---"
+            docker compose -f test/docker-compose.yml logs traefik --since "$RESTART_AT" 2>&1 || true
             exit 1
           fi
 
