@@ -417,4 +417,3 @@ func TestNewValidation_MMDB(t *testing.T) {
 		}
 	})
 }
-

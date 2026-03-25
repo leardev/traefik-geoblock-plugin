@@ -386,7 +386,7 @@ func decodeMMDBMetadata(data []byte, start uint32) (nodeCount, recordSize, ipVer
 			// Skip unknown/complex values (strings, maps, arrays, etc.).
 			pos = skipMetaValue(data, vStart)
 			if pos == 0 {
-				break
+				return 0, 0, 0, fmt.Errorf("mmdb: failed to skip metadata value for key %q", k)
 			}
 		}
 	}
