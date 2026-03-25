@@ -283,12 +283,15 @@ func loadDatabaseFromDisk(path string) (*ipDatabase, error) {
 	}
 	defer f.Close()
 
-	data, err := io.ReadAll(f)
+	// Stream-parse directly from the file to avoid a ~10–20 MB buffer for the
+	// compressed CSV bytes.
+	gz, err := gzip.NewReader(f)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decompressing database: %w", err)
 	}
+	defer gz.Close()
 
-	return parseGzippedCSV(data)
+	return parseCSV(gz)
 }
 
 // saveToDisk writes data atomically (write to tmp, then rename).
@@ -312,4 +315,48 @@ func saveToDisk(path string, data []byte) error {
 	}
 
 	return os.Rename(tmp, path)
+}
+
+// streamToFile copies r to path atomically via a temp file + rename,
+// without buffering the full content in memory.
+func streamToFile(r io.Reader, path string) error {
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+
+	_, writeErr := io.Copy(f, r)
+	closeErr := f.Close()
+
+	if writeErr != nil {
+		os.Remove(tmp)
+		return writeErr
+	}
+	if closeErr != nil {
+		os.Remove(tmp)
+		return closeErr
+	}
+
+	return os.Rename(tmp, path)
+}
+
+// downloadToFile streams a file from url directly to destPath without
+// buffering the full response body in memory. This avoids the ~50 MB
+// allocation that downloadRaw would create when fetching the MMDB.
+func downloadToFile(overrideURL, token, baseURL, destPath string) error {
+	downloadURL := buildDownloadURL(overrideURL, token, baseURL)
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Get(downloadURL) //nolint:gosec // URL is constructed internally
+	if err != nil {
+		return fmt.Errorf("downloading: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download returned status %d", resp.StatusCode)
+	}
+
+	return streamToFile(resp.Body, destPath)
 }

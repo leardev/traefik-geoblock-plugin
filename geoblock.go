@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -296,19 +297,17 @@ func (g *GeoBlock) updateDatabase() {
 	g.mu.Lock()
 	g.db = db
 	g.mu.Unlock()
+	runtime.GC() // promptly reclaim old database memory
 
 	g.logf("database updated: %d IPv4, %d IPv6 ranges", len(db.v4), len(db.v6))
 }
 
 func (g *GeoBlock) updateMMDB() {
-	data, err := downloadRaw(g.config.DatabaseMMDBURL, g.config.Token, defaultMMDBBaseURL)
-	if err != nil {
+	// Stream the download directly to disk instead of buffering it in memory
+	// first. This avoids a ~50 MB spike from holding both the raw download bytes
+	// and the parsed mmdbReader.data simultaneously.
+	if err := downloadToFile(g.config.DatabaseMMDBURL, g.config.Token, defaultMMDBBaseURL, g.config.DatabaseMMDBPath); err != nil {
 		g.logf("MMDB database download failed: %v", err)
-		return
-	}
-
-	if err := saveToDisk(g.config.DatabaseMMDBPath, data); err != nil {
-		g.logf("failed to save MMDB database to disk: %v", err)
 		return
 	}
 
@@ -324,6 +323,7 @@ func (g *GeoBlock) updateMMDB() {
 	}
 	g.db = mmdb
 	g.mu.Unlock()
+	runtime.GC() // promptly reclaim old database memory
 
 	g.logf("MMDB database updated")
 }
