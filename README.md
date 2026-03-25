@@ -16,6 +16,7 @@ A [Traefik](https://traefik.io/) middleware plugin that blocks or allows request
 - **Configurable fallback** when an IP is not found in the database
 - **Custom HTTP status code** for blocked requests (default: `403`)
 - **Optional request logging**
+- **Country header** — write `X-Geoblock-Country` on every response for visibility in Traefik access logs
 
 ## Installation
 
@@ -77,6 +78,7 @@ The MMDB backend is recommended for production and multi-replica deployments.
 | `defaultAllow`       | `bool`     | `true`                      | Allow requests when the IP is not found or the DB is not loaded.  |
 | `httpStatusCode`     | `int`      | `403`                       | HTTP status code returned for blocked requests.                   |
 | `logEnabled`         | `bool`     | `false`                     | Log each allowed/blocked decision.                                |
+| `addCountryHeader`   | `bool`     | `false`                     | Write an `X-Geoblock-Country` response header with the resolved country code on every request (see [Access log visibility](#access-log-visibility)). |
 
 Exactly one of `allowedCountries` or `blockedCountries` must be set.
 
@@ -121,6 +123,48 @@ http:
           defaultAllow: false
           logEnabled: true
 ```
+
+## Access log visibility
+
+Traefik's access log shows the HTTP status code but not *why* a request was blocked. Enable `addCountryHeader: true` to write an `X-Geoblock-Country` response header on every request, then tell Traefik to include it in access log lines.
+
+**Plugin config:**
+```yaml
+http:
+  middlewares:
+    my-geoblock:
+      plugin:
+        geoblock:
+          addCountryHeader: true
+          # ... other options
+```
+
+**Traefik static config:**
+```yaml
+accessLog:
+  fields:
+    headers:
+      defaultMode: drop
+      names:
+        X-Geoblock-Country: keep
+```
+
+Blocked access log lines will then include the country that triggered the block:
+
+```
+"GET / HTTP/1.1" 403 ... "X-Geoblock-Country: CN"
+```
+
+**Header values:**
+
+| Value | Meaning |
+|---|---|
+| `DE`, `US`, … | Resolved 2-letter country code |
+| `unknown` | IP not found in the database |
+| `private` | Request from a private / RFC 1918 address |
+| `db-not-loaded` | Database not yet downloaded |
+
+> The header is set on *all* requests — allowed and blocked alike — so it can also be used for metrics or access log analysis, not just debugging 403s.
 
 ## Local testing
 

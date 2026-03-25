@@ -64,6 +64,20 @@ type Config struct {
 	// HTTPStatusCode is the HTTP status code returned for blocked requests.
 	// Default: 403.
 	HTTPStatusCode int `json:"httpStatusCode,omitempty"`
+
+	// AddCountryHeader writes an X-Geoblock-Country response header containing
+	// the resolved 2-letter country code (or "unknown" / "private") on every
+	// request.  When enabled, configure Traefik's access log to capture it:
+	//
+	//   accessLog:
+	//     fields:
+	//       headers:
+	//         names:
+	//           X-Geoblock-Country: keep
+	//
+	// This makes 403 log lines show the country that triggered the block.
+	// Default: false.
+	AddCountryHeader bool `json:"addCountryHeader,omitempty"`
 }
 
 // CreateConfig creates the default plugin configuration.
@@ -191,6 +205,9 @@ func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	if g.config.AllowPrivate && isPrivateIP(ip) {
+		if g.config.AddCountryHeader {
+			rw.Header().Set("X-Geoblock-Country", "private")
+		}
 		g.next.ServeHTTP(rw, req)
 		return
 	}
@@ -205,6 +222,13 @@ func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	country := lookup.lookup(ip)
+	if g.config.AddCountryHeader {
+		cc := country
+		if cc == "" {
+			cc = "unknown"
+		}
+		rw.Header().Set("X-Geoblock-Country", cc)
+	}
 	if g.isCountryAllowed(country) {
 		if g.config.LogEnabled {
 			g.logf("allowed %s country=%s", ip, country)
@@ -219,6 +243,9 @@ func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 }
 
 func (g *GeoBlock) handleDefault(rw http.ResponseWriter, req *http.Request, ip, reason string) {
+	if g.config.AddCountryHeader {
+		rw.Header().Set("X-Geoblock-Country", reason)
+	}
 	if g.config.DefaultAllow {
 		if g.config.LogEnabled {
 			g.logf("default-allow %s reason=%s", ip, reason)
