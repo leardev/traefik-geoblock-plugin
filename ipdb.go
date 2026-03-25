@@ -217,35 +217,46 @@ func parseGzippedCSV(data []byte) (*ipDatabase, error) {
 }
 
 const defaultBaseURL = "https://ipinfo.io/data/ipinfo_lite.csv.gz"
+const defaultMMDBBaseURL = "https://ipinfo.io/data/ipinfo_lite.mmdb"
 
-func buildDownloadURL(baseURL, token string) string {
-	if baseURL == "" {
-		baseURL = defaultBaseURL
+func buildDownloadURL(overrideURL, token, baseURL string) string {
+	if overrideURL != "" {
+		// Test overrides are passed verbatim (they don't need the token appended
+		// because the mock server ignores query parameters).
+		v := url.Values{}
+		v.Set("token", token)
+		return overrideURL + "?" + v.Encode()
 	}
 	v := url.Values{}
 	v.Set("token", token)
 	return baseURL + "?" + v.Encode()
 }
 
-// downloadAndParse downloads the IPInfo Lite database and parses it.
-// Returns the parsed database and the raw gzipped bytes (for caching to disk).
-func downloadAndParse(baseURL, token string) (*ipDatabase, []byte, error) {
-	downloadURL := buildDownloadURL(baseURL, token)
+// downloadRaw downloads a raw file from the given URL (with token auth) and
+// returns the raw bytes. baseURL is used if overrideURL is empty.
+func downloadRaw(overrideURL, token, baseURL string) ([]byte, error) {
+	downloadURL := buildDownloadURL(overrideURL, token, baseURL)
 
 	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Get(downloadURL)
+	resp, err := client.Get(downloadURL) //nolint:gosec // URL is constructed internally
 	if err != nil {
-		return nil, nil, fmt.Errorf("downloading database: %w", err)
+		return nil, fmt.Errorf("downloading: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("download returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("download returned status %d", resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	return io.ReadAll(resp.Body)
+}
+
+// downloadAndParse downloads the IPInfo Lite CSV database and parses it.
+// Returns the parsed database and the raw gzipped bytes (for caching to disk).
+func downloadAndParse(overrideURL, token string) (*ipDatabase, []byte, error) {
+	data, err := downloadRaw(overrideURL, token, defaultBaseURL)
 	if err != nil {
-		return nil, nil, fmt.Errorf("reading response body: %w", err)
+		return nil, nil, err
 	}
 
 	db, err := parseGzippedCSV(data)

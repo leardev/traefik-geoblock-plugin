@@ -161,3 +161,122 @@ jobs:
       - name: Cleanup
         if: always()
         run: docker compose -f test/docker-compose.yml down -v 2>/dev/null || true
+
+  integration-mmdb:
+    name: Integration Test — MMDB backend
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate MMDB dynamic config
+        env:
+          IPINFO_TOKEN: ${{ secrets.IPINFO_TOKEN }}
+        run: |
+          if [ -z "$IPINFO_TOKEN" ]; then
+            echo "::warning::IPINFO_TOKEN secret not set, skipping MMDB integration test"
+            exit 0
+          fi
+          envsubst < test/docker/dynamic.mmdb.yml.tpl > test/docker/dynamic.yml
+
+      - name: Start services (MMDB)
+        env:
+          IPINFO_TOKEN: ${{ secrets.IPINFO_TOKEN }}
+        run: |
+          if [ -z "$IPINFO_TOKEN" ]; then
+            exit 0
+          fi
+          docker compose -f test/docker-compose.yml up -d
+          echo "Waiting for Traefik to download MMDB database..."
+          for i in $(seq 1 60); do
+            if docker compose -f test/docker-compose.yml logs traefik 2>&1 | grep -q 'MMDB database updated\|loaded MMDB database from disk'; then
+              echo "MMDB loaded!"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Timed out waiting for MMDB database"
+              docker compose -f test/docker-compose.yml logs traefik
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Test geo-blocking (MMDB)
+        env:
+          IPINFO_TOKEN: ${{ secrets.IPINFO_TOKEN }}
+        run: |
+          if [ -z "$IPINFO_TOKEN" ]; then
+            echo "Skipped (no token)"
+            exit 0
+          fi
+
+          PASS=0
+          FAIL=0
+
+          check() {
+            local desc="$1" ip="$2" expected="$3"
+            local code
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: $ip" http://localhost/)
+            if [ "$code" = "$expected" ]; then
+              echo "✅ $desc: $ip -> $code (expected $expected)"
+              PASS=$((PASS + 1))
+            else
+              echo "❌ $desc: $ip -> $code (expected $expected)"
+              FAIL=$((FAIL + 1))
+            fi
+          }
+
+          check "Private IP (allow)"  "10.0.0.1"   200
+          check "German IP (allow)"   "91.0.0.1"   200
+          check "Austrian IP (allow)" "77.116.0.1" 200
+          check "US IP (block)"       "8.8.8.8"    403
+          check "Chinese IP (block)"  "1.0.1.1"    403
+          check "Russian IP (block)"  "5.3.0.1"    403
+
+          echo ""
+          echo "Results: $PASS passed, $FAIL failed"
+
+          if [ "$FAIL" -gt 0 ]; then
+            docker compose -f test/docker-compose.yml logs traefik | grep geoblock
+            exit 1
+          fi
+
+      - name: Verify MMDB file on disk
+        env:
+          IPINFO_TOKEN: ${{ secrets.IPINFO_TOKEN }}
+        run: |
+          if [ -z "$IPINFO_TOKEN" ]; then
+            echo "Skipped (no token)"
+            exit 0
+          fi
+          docker compose -f test/docker-compose.yml exec -T traefik ls -lh /data/ipinfo_lite.mmdb
+          echo "✅ MMDB file exists on disk"
+
+          echo "Restarting Traefik to test loading MMDB from disk..."
+          docker compose -f test/docker-compose.yml restart traefik
+          sleep 5
+          for i in $(seq 1 30); do
+            if docker compose -f test/docker-compose.yml logs traefik --since 30s 2>&1 | grep -q 'loaded MMDB database from disk'; then
+              echo "✅ MMDB loaded from disk after restart"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "❌ Timed out waiting for MMDB load from disk"
+              docker compose -f test/docker-compose.yml logs traefik --since 60s 2>&1 | grep geoblock
+              exit 1
+            fi
+            sleep 2
+          done
+
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: 8.8.8.8" http://localhost/)
+          if [ "$CODE" = "403" ]; then
+            echo "✅ Geo-blocking works after MMDB restart from disk"
+          else
+            echo "❌ Expected 403 for US IP after MMDB restart, got $CODE"
+            exit 1
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f test/docker-compose.yml down -v 2>/dev/null || true

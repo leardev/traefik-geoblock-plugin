@@ -27,11 +27,23 @@ type Config struct {
 	// Token is the IPInfo API token for downloading the database.
 	Token string `json:"token,omitempty"`
 
-	// DatabasePath is the filesystem path to cache the gzipped database.
+	// DatabasePath is the filesystem path to cache the gzipped CSV database.
+	// Mutually exclusive with DatabaseMMDBPath.
 	DatabasePath string `json:"databasePath,omitempty"`
 
-	// DatabaseURL overrides the default IPInfo download URL (for testing).
+	// DatabaseURL overrides the default IPInfo CSV download URL (for testing).
 	DatabaseURL string `json:"databaseURL,omitempty"`
+
+	// DatabaseMMDBPath is the filesystem path to cache the MMDB database.
+	// When set, the MMDB backend is used instead of the CSV backend.
+	// The MMDB file (~50 MB) is loaded into memory from disk on startup and
+	// after each automatic update, using significantly less memory than the
+	// parsed CSV database (~150 MB).
+	// Mutually exclusive with DatabasePath.
+	DatabaseMMDBPath string `json:"databaseMMDBPath,omitempty"`
+
+	// DatabaseMMDBURL overrides the default IPInfo MMDB download URL (for testing).
+	DatabaseMMDBURL string `json:"databaseMMDBURL,omitempty"`
 
 	// UpdateInterval is the number of hours between automatic database updates.
 	// Default: 24.
@@ -59,9 +71,13 @@ func CreateConfig() *Config {
 		UpdateInterval: 24,
 		AllowPrivate:   true,
 		DefaultAllow:   true,
-		DatabasePath:   "/tmp/ipinfo_lite.csv.gz",
 		HTTPStatusCode: http.StatusForbidden,
 	}
+}
+
+// ipLookup is the common interface for both the CSV and MMDB lookup backends.
+type ipLookup interface {
+	lookup(ip net.IP) string
 }
 
 // GeoBlock is a Traefik middleware plugin for geo-blocking.
@@ -71,7 +87,7 @@ type GeoBlock struct {
 	config *Config
 
 	mu sync.RWMutex
-	db *ipDatabase
+	db ipLookup // either *ipDatabase (CSV) or *mmdbReader (MMDB)
 
 	allowed map[string]struct{}
 	blocked map[string]struct{}
@@ -89,6 +105,14 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 	}
 	if config.Token == "" {
 		return nil, fmt.Errorf("geoblock: token is required")
+	}
+
+	if config.DatabasePath != "" && config.DatabaseMMDBPath != "" {
+		return nil, fmt.Errorf("geoblock: cannot set both databasePath and databaseMMDBPath")
+	}
+	// Apply the CSV default only when MMDB is not configured.
+	if config.DatabasePath == "" && config.DatabaseMMDBPath == "" {
+		config.DatabasePath = "/tmp/ipinfo_lite.csv.gz"
 	}
 
 	if config.UpdateInterval <= 0 {
@@ -119,10 +143,15 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 	}
 
 	// Try loading cached database from disk.
-	if config.DatabasePath != "" {
+	if config.DatabaseMMDBPath != "" {
+		if mmdb, err := openMMDB(config.DatabaseMMDBPath); err == nil {
+			g.db = mmdb
+			g.logf("loaded MMDB database from disk")
+		}
+	} else if config.DatabasePath != "" {
 		if db, err := loadDatabaseFromDisk(config.DatabasePath); err == nil {
 			g.db = db
-			g.logf("loaded database from disk: %d IPv4, %d IPv6 ranges", len(db.v4), len(db.v6))
+			g.logf("loaded CSV database from disk: %d IPv4, %d IPv6 ranges", len(db.v4), len(db.v6))
 		}
 	}
 
@@ -145,15 +174,15 @@ func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	g.mu.RLock()
-	db := g.db
+	lookup := g.db
 	g.mu.RUnlock()
 
-	if db == nil {
+	if lookup == nil {
 		g.handleDefault(rw, req, ip.String(), "db-not-loaded")
 		return
 	}
 
-	country := db.lookup(ip)
+	country := lookup.lookup(ip)
 	if g.isCountryAllowed(country) {
 		if g.config.LogEnabled {
 			g.logf("allowed %s country=%s", ip, country)
@@ -206,7 +235,11 @@ func (g *GeoBlock) updater() {
 	g.mu.RUnlock()
 
 	if needsDownload {
-		g.updateDatabase()
+		if g.config.DatabaseMMDBPath != "" {
+			g.updateMMDB()
+		} else {
+			g.updateDatabase()
+		}
 	}
 
 	ticker := time.NewTicker(time.Duration(g.config.UpdateInterval) * time.Hour)
@@ -215,7 +248,11 @@ func (g *GeoBlock) updater() {
 	for {
 		select {
 		case <-ticker.C:
-			g.updateDatabase()
+			if g.config.DatabaseMMDBPath != "" {
+				g.updateMMDB()
+			} else {
+				g.updateDatabase()
+			}
 		case <-g.done:
 			return
 		}
@@ -240,6 +277,34 @@ func (g *GeoBlock) updateDatabase() {
 	g.mu.Unlock()
 
 	g.logf("database updated: %d IPv4, %d IPv6 ranges", len(db.v4), len(db.v6))
+}
+
+func (g *GeoBlock) updateMMDB() {
+	data, err := downloadRaw(g.config.DatabaseMMDBURL, g.config.Token, defaultMMDBBaseURL)
+	if err != nil {
+		g.logf("MMDB database download failed: %v", err)
+		return
+	}
+
+	if err := saveToDisk(g.config.DatabaseMMDBPath, data); err != nil {
+		g.logf("failed to save MMDB database to disk: %v", err)
+		return
+	}
+
+	mmdb, err := openMMDB(g.config.DatabaseMMDBPath)
+	if err != nil {
+		g.logf("failed to open MMDB database: %v", err)
+		return
+	}
+
+	g.mu.Lock()
+	if old, ok := g.db.(*mmdbReader); ok {
+		old.close()
+	}
+	g.db = mmdb
+	g.mu.Unlock()
+
+	g.logf("MMDB database updated")
 }
 
 var logger = log.New(os.Stdout, "", log.LstdFlags)

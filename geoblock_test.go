@@ -438,10 +438,14 @@ func TestUpdateDatabase(t *testing.T) {
 	if db == nil {
 		t.Fatal("database should be loaded after update")
 	}
-	if len(db.v4) == 0 {
+	csvDB, ok := db.(*ipDatabase)
+	if !ok {
+		t.Fatal("expected *ipDatabase after CSV update")
+	}
+	if len(csvDB.v4) == 0 {
 		t.Error("expected IPv4 ranges after update")
 	}
-	if len(db.v6) == 0 {
+	if len(csvDB.v6) == 0 {
 		t.Error("expected IPv6 ranges after update")
 	}
 
