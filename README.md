@@ -1,6 +1,6 @@
 # traefik-geoblock-plugin
 
-<img src="icon.png" alt="GeoBlock icon" width="96" align="right"/>
+<img src=".assets/icon.png" alt="GeoBlock icon" width="96" align="right"/>
 
 [![CI](https://github.com/leardev/traefik-geoblock-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/leardev/traefik-geoblock-plugin/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/leardev/traefik-geoblock-plugin)](https://goreportcard.com/report/github.com/leardev/traefik-geoblock-plugin)

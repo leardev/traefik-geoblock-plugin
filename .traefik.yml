@@ -1,5 +1,6 @@
 displayName: GeoBlock (IPinfo.io)
 type: middleware
+iconPath: .assets/icon.png
 import: github.com/leardev/traefik-geoblock-plugin
 summary: Geo-blocking middleware using IPinfo Lite database with automatic updates
 testData:
