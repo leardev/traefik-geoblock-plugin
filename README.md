@@ -1,5 +1,7 @@
 # traefik-geoblock-plugin
 
+<img src="icon.png" alt="GeoBlock icon" width="96" align="right"/>
+
 A [Traefik](https://traefik.io/) middleware plugin that blocks or allows requests based on geographic location, using the [IPInfo Lite](https://ipinfo.io/products/free-ip-database) database with automatic updates.
 
 ## Features

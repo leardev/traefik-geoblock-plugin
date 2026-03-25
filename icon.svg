@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <radialGradient id="globeGrad" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#4fc3f7"/>
+      <stop offset="100%" stop-color="#0277bd"/>
+    </radialGradient>
+    <radialGradient id="oceanGrad" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#29b6f6"/>
+      <stop offset="100%" stop-color="#01579b"/>
+    </radialGradient>
+    <clipPath id="globeClip">
+      <circle cx="90" cy="95" r="72"/>
+    </clipPath>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ef5350"/>
+      <stop offset="100%" stop-color="#b71c1c"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="2" dy="3" stdDeviation="4" flood-color="#00000044"/>
+    </filter>
+  </defs>
+
+  <!-- Globe base -->
+  <circle cx="90" cy="95" r="72" fill="url(#oceanGrad)" filter="url(#shadow)"/>
+
+  <!-- Land masses — detailed polygon outlines, Europe centre, Americas left, Asia/Australia right -->
+  <g clip-path="url(#globeClip)" fill="#43a047" opacity="0.9">
+
+    <!-- Europe (centre-top) — Iberian peninsula stub left, Scandinavia stub top-right -->
+    <path d="
+      M 83,56  L 80,58  L 78,62  L 79,66  L 82,68
+      L 80,70  L 81,73  L 84,74  L 86,72  L 88,73
+      L 91,71  L 95,72  L 98,69  L 100,65
+      L 97,61  L 99,57  L 96,54  L 92,53
+      L 89,55  L 86,54  Z
+    "/>
+    <!-- Scandinavian peninsula -->
+    <path d="M 96,54  L 98,50  L 100,47  L 102,49  L 101,53  L 99,57  L 96,54 Z"/>
+    <!-- Iberian peninsula -->
+    <path d="M 79,66  L 76,67  L 75,70  L 77,73  L 80,72  L 81,70  L 80,68  L 79,66 Z"/>
+
+    <!-- Africa (centre-lower) — roughly trapezoidal with horn and cape -->
+    <path d="
+      M 84,78  L 80,80  L 78,85  L 77,92
+      L 79,100 L 80,108 L 83,116 L 86,120
+      L 88,118 L 91,116 L 93,110 L 95,103
+      L 97,95  L 96,87  L 94,81  L 91,78
+      L 88,77  Z
+    "/>
+    <!-- Horn of Africa -->
+    <path d="M 95,103  L 100,100  L 101,104  L 97,107  L 95,103 Z"/>
+
+    <!-- North America (left) — wide top, tapering south to Central America -->
+    <path d="
+      M 42,52  L 38,56  L 36,62  L 37,68
+      L 40,72  L 38,76  L 41,80  L 45,82
+      L 48,80  L 52,81  L 55,79  L 58,76
+      L 62,74  L 64,70  L 63,64  L 60,59
+      L 56,55  L 51,52  L 46,51  Z
+    "/>
+    <!-- Greenland stub -->
+    <path d="M 51,52  L 52,46  L 56,44  L 59,47  L 57,51  L 53,52 Z"/>
+    <!-- Central America / Mexico taper -->
+    <path d="M 45,82  L 46,87  L 49,90  L 52,88  L 53,84  L 50,82  L 48,81 Z"/>
+
+    <!-- South America (left-lower) -->
+    <path d="
+      M 52,93  L 49,97  L 48,103 L 49,110
+      L 51,117 L 54,122 L 57,124 L 60,122
+      L 63,117 L 65,110 L 64,103 L 62,97
+      L 59,93  L 55,91  Z
+    "/>
+
+    <!-- Asia (right) — large irregular mass -->
+    <path d="
+      M 104,47 L 100,47 L 99,51  L 101,55
+      L 104,56 L 108,54 L 113,52 L 118,51
+      L 124,50 L 130,51 L 136,53 L 140,56
+      L 143,60 L 144,65 L 142,70 L 138,73
+      L 134,74 L 130,76 L 126,78 L 122,80
+      L 118,82 L 115,85 L 113,88 L 111,84
+      L 108,81 L 105,77 L 103,72 L 103,66
+      L 102,60 L 103,54 Z
+    "/>
+    <!-- Indian subcontinent -->
+    <path d="M 122,80  L 120,85  L 119,91  L 121,97  L 124,99  L 127,96  L 128,89  L 126,83  L 122,80 Z"/>
+    <!-- Arabian peninsula -->
+    <path d="M 111,84  L 108,86  L 107,91  L 109,95  L 112,95  L 114,91  L 114,87  L 113,84 Z"/>
+    <!-- Southeast Asia peninsula -->
+    <path d="M 134,74  L 133,80  L 135,86  L 138,88  L 140,85  L 139,79  L 137,74 Z"/>
+    <!-- Japan island stub -->
+    <path d="M 143,60  L 147,58  L 149,62  L 147,65  L 144,65 Z"/>
+
+    <!-- Australia (right-lower) -->
+    <path d="
+      M 128,112 L 124,114 L 122,119 L 123,125
+      L 127,129 L 132,130 L 137,128 L 140,124
+      L 140,118 L 137,114 L 132,111 Z
+    "/>
+
+  </g>
+
+  <!-- Latitude lines -->
+  <g clip-path="url(#globeClip)" stroke="#ffffff" stroke-width="0.8" fill="none" opacity="0.3">
+    <ellipse cx="90" cy="95" rx="72" ry="18"/>
+    <ellipse cx="90" cy="95" rx="72" ry="45"/>
+    <ellipse cx="90" cy="71" rx="57" ry="14"/>
+    <ellipse cx="90" cy="119" rx="57" ry="14"/>
+  </g>
+
+  <!-- Longitude lines -->
+  <g clip-path="url(#globeClip)" stroke="#ffffff" stroke-width="0.8" fill="none" opacity="0.3">
+    <ellipse cx="90" cy="95" rx="30" ry="72"/>
+    <ellipse cx="90" cy="95" rx="55" ry="72"/>
+    <line x1="90" y1="23" x2="90" y2="167"/>
+  </g>
+
+  <!-- Globe outline -->
+  <circle cx="90" cy="95" r="72" fill="none" stroke="#0288d1" stroke-width="2"/>
+
+  <!-- Shield (firewall) — lower-right, overlapping globe -->
+  <g filter="url(#shadow)">
+    <path d="M148 118 L148 118 L120 118 L114 123 L114 153 Q114 166 134 174 Q154 166 154 153 L154 123 Z"
+          fill="url(#shieldGrad)" stroke="#c62828" stroke-width="1.5" stroke-linejoin="round"/>
+    <!-- Shield lines representing "firewall" bars -->
+    <line x1="119" y1="138" x2="149" y2="138" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" opacity="0.9"/>
+    <line x1="119" y1="148" x2="149" y2="148" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" opacity="0.9"/>
+    <line x1="119" y1="158" x2="149" y2="158" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" opacity="0.7"/>
+    <!-- Shield check mark removed, replaced with lock icon -->
+    <rect x="128" y="124" width="12" height="9" rx="2" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.95"/>
+    <path d="M131 124 Q131 119 134 119 Q137 119 137 124" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.95"/>
+    <circle cx="134" cy="129" r="1.5" fill="#ffffff" opacity="0.95"/>
+  </g>
+</svg>
