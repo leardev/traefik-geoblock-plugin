@@ -20,7 +20,7 @@ experimental:
   plugins:
     geoblock:
       moduleName: github.com/leardev/traefik-geoblock-plugin
-      version: v0.1.0
+      version: v0.1.1
 ```
 
 For local development, use `localPlugins` instead (see [test/docker-compose.yml](test/docker-compose.yml)).
