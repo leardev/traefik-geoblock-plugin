@@ -308,16 +308,37 @@ func (g *GeoBlock) isCountryAllowed(country string) bool {
 }
 
 func (g *GeoBlock) updater(ctx context.Context) {
-	// If no database is loaded yet, download immediately.
+	// If no database is loaded yet, attempt to download immediately.
 	g.mu.RLock()
 	needsDownload := g.db == nil
 	g.mu.RUnlock()
 
 	if needsDownload {
-		if g.config.DatabaseMMDBPath != "" {
-			g.updateMMDB()
-		} else {
-			g.updateDatabase()
+		g.runUpdate()
+
+		// If the DB is still not loaded after the download attempt (e.g. this
+		// goroutine lost the concurrent-rename race but another goroutine already
+		// wrote the file), retry by loading from disk only — no re-download.
+		// Backoff: 5s → 10s → 20s → … capped at 5 minutes.
+		backoff := 5 * time.Second
+		for {
+			g.mu.RLock()
+			loaded := g.db != nil
+			g.mu.RUnlock()
+			if loaded {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-g.done:
+				return
+			case <-time.After(backoff):
+				g.loadCachedDB()
+				if backoff < 5*time.Minute {
+					backoff *= 2
+				}
+			}
 		}
 	}
 
@@ -327,16 +348,20 @@ func (g *GeoBlock) updater(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			if g.config.DatabaseMMDBPath != "" {
-				g.updateMMDB()
-			} else {
-				g.updateDatabase()
-			}
+			g.runUpdate()
 		case <-ctx.Done():
 			return
 		case <-g.done:
 			return
 		}
+	}
+}
+
+func (g *GeoBlock) runUpdate() {
+	if g.config.DatabaseMMDBPath != "" {
+		g.updateMMDB()
+	} else {
+		g.updateDatabase()
 	}
 }
 
