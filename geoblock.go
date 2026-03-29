@@ -341,6 +341,20 @@ func (g *GeoBlock) updateMMDB() {
 	// and the parsed mmdbReader.data simultaneously.
 	if err := downloadToFile(g.config.DatabaseMMDBURL, g.config.Token, defaultMMDBBaseURL, g.config.DatabaseMMDBPath); err != nil {
 		g.logf("MMDB database download failed: %v", err)
+		// Multiple middleware instances start concurrently and all race to write
+		// the same .tmp file.  The first goroutine to win the rename removes the
+		// .tmp, causing the others to get "no such file or directory" on their
+		// own rename.  The destination file may already exist — try loading it.
+		if mmdb, openErr := openMMDB(g.config.DatabaseMMDBPath); openErr == nil {
+			g.mu.Lock()
+			if old, ok := g.db.(*mmdbReader); ok {
+				old.close()
+			}
+			g.db = mmdb
+			g.mu.Unlock()
+			runtime.GC()
+			g.logf("MMDB database loaded from disk after failed download (concurrent write race)")
+		}
 		return
 	}
 

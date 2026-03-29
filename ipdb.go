@@ -320,17 +320,22 @@ func saveToDisk(path string, data []byte) error {
 
 // streamToFile copies r to path atomically via a temp file + rename,
 // without buffering the full content in memory.
+// A unique temp file name is used per call so that concurrent goroutines
+// downloading the same destination path do not corrupt each other's writes.
 func streamToFile(r io.Reader, path string) error {
-	if dir := filepath.Dir(path); dir != "" {
+	dir := filepath.Dir(path)
+	if dir != "" {
 		if err := os.MkdirAll(dir, 0750); err != nil {
 			return fmt.Errorf("creating directory %s: %w", dir, err)
 		}
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	// os.CreateTemp gives a unique name, preventing concurrent goroutines from
+	// writing to the same .tmp file and interleaving their bytes.
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp.*")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
 
 	_, writeErr := io.Copy(f, r)
 	closeErr := f.Close()
@@ -342,6 +347,11 @@ func streamToFile(r io.Reader, path string) error {
 	if closeErr != nil {
 		os.Remove(tmp)
 		return closeErr
+	}
+
+	if err := os.Chmod(tmp, 0600); err != nil {
+		os.Remove(tmp)
+		return err
 	}
 
 	return os.Rename(tmp, path)
