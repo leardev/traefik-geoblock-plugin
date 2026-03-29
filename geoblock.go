@@ -110,11 +110,25 @@ type GeoBlock struct {
 	done chan struct{}
 }
 
+// geoBlockHandler is the http.Handler returned to Traefik. It wraps *GeoBlock
+// with an inner context cancel func. A runtime finalizer on this wrapper calls
+// innerCancel when Traefik drops the handler reference (e.g. on a config
+// hot-reload). This stops the updater goroutine and allows the *GeoBlock (and
+// its ~50 MiB MMDB / ~150 MiB CSV database) to be garbage-collected even when
+// the outer lifecycle context passed to New() is never cancelled — which is the
+// case with Traefik 2.x where the context is context.Background().
+type geoBlockHandler struct {
+	*GeoBlock
+	innerCancel context.CancelFunc
+}
+
 // New creates a new GeoBlock middleware instance.
-// ctx is the middleware's lifecycle context; it is cancelled by Traefik when
-// the plugin instance is replaced on a configuration reload.  The updater
-// goroutine exits on cancellation so the old instance (and its ~50 MB MMDB
-// byte slice) can be garbage-collected instead of leaking.
+// ctx is the middleware's lifecycle context provided by Traefik. In Traefik 2.x
+// this is typically context.Background() and is never cancelled on hot-reload.
+// To guard against that, New() creates an inner context and stores its cancel
+// func in a geoBlockHandler wrapper. A runtime finalizer on the wrapper calls
+// innerCancel when Traefik drops the handler, stopping the updater goroutine
+// and allowing the database to be garbage-collected.
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	logger.Printf("[geoblock:%s] initializing", name)
 	if err := validateConfig(config); err != nil {
@@ -128,6 +142,11 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		config.HTTPStatusCode = http.StatusForbidden
 	}
 
+	// innerCtx is cancelled either when the outer ctx is cancelled (Traefik
+	// shutdown or a Traefik version that properly manages the lifecycle) OR
+	// when the finalizer on geoBlockHandler fires (handler discarded on reload).
+	innerCtx, innerCancel := context.WithCancel(ctx)
+
 	g := &GeoBlock{
 		next:    next,
 		name:    name,
@@ -139,9 +158,16 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	g.loadCachedDB()
 
-	go g.updater(ctx)
+	go g.updater(innerCtx)
 
-	return g, nil
+	// Wrap g in a handler whose finalizer cancels innerCtx. The goroutine holds
+	// g (*GeoBlock) directly (not handler), so handler can become unreachable
+	// when Traefik drops its reference, triggering the finalizer even while the
+	// goroutine is still running. The goroutine then observes ctx.Done() and exits.
+	handler := &geoBlockHandler{GeoBlock: g, innerCancel: innerCancel}
+	runtime.SetFinalizer(handler, func(h *geoBlockHandler) { h.innerCancel() })
+
+	return handler, nil
 }
 
 // validateConfig checks that the configuration is self-consistent and applies
