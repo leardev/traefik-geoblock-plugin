@@ -73,12 +73,12 @@ func TestCSVIPv4OnlyDatabase(t *testing.T) {
 		t.Errorf("expected no IPv6 ranges in IPv4-only DB, got %d", len(db.v6))
 	}
 	// IPv4 lookups still work.
-	if got := db.lookup(net.ParseIP("8.8.8.8")); got != "US" {
-		t.Errorf("lookup(8.8.8.8) = %q, want US", got)
+	if got := db.lookup(net.ParseIP("8.8.8.8")); got.Country != "US" {
+		t.Errorf("lookup(8.8.8.8) = %q, want US", got.Country)
 	}
 	// IPv6 address on an IPv4-only database → "" (exercises lookupV6 n==0 guard).
-	if got := db.lookup(net.ParseIP("2001:4860:4860::8888")); got != "" {
-		t.Errorf("IPv6 lookup on IPv4-only CSV DB = %q, want empty", got)
+	if got := db.lookup(net.ParseIP("2001:4860:4860::8888")); got.Country != "" {
+		t.Errorf("IPv6 lookup on IPv4-only CSV DB = %q, want empty", got.Country)
 	}
 }
 
@@ -118,8 +118,8 @@ func TestLookupV4(t *testing.T) {
 		t.Run(tt.comment, func(t *testing.T) {
 			ip := net.ParseIP(tt.ip)
 			got := db.lookup(ip)
-			if got != tt.want {
-				t.Errorf("lookup(%s) = %q, want %q", tt.ip, got, tt.want)
+			if got.Country != tt.want {
+				t.Errorf("lookup(%s) = %q, want %q", tt.ip, got.Country, tt.want)
 			}
 		})
 	}
@@ -143,8 +143,8 @@ func TestLookupV6(t *testing.T) {
 		t.Run(tt.comment, func(t *testing.T) {
 			ip := net.ParseIP(tt.ip)
 			got := db.lookup(ip)
-			if got != tt.want {
-				t.Errorf("lookup(%s) = %q, want %q", tt.ip, got, tt.want)
+			if got.Country != tt.want {
+				t.Errorf("lookup(%s) = %q, want %q", tt.ip, got.Country, tt.want)
 			}
 		})
 	}
@@ -484,9 +484,9 @@ func TestUpdateDatabase(t *testing.T) {
 
 	// Verify lookup works with updated database.
 	ip := net.ParseIP("91.0.0.1")
-	country := db.lookup(ip)
-	if country != "DE" {
-		t.Errorf("expected DE, got %q", country)
+	res := db.lookup(ip)
+	if res.Country != "DE" {
+		t.Errorf("expected DE, got %q", res.Country)
 	}
 
 	// Verify the middleware serves correctly after update.
@@ -526,9 +526,9 @@ func TestUpdateDatabaseFromDisk(t *testing.T) {
 	}
 
 	// Verify lookup.
-	country := db.lookup(net.ParseIP("8.8.8.8"))
-	if country != "US" {
-		t.Errorf("expected US from disk cache, got %q", country)
+	res := db.lookup(net.ParseIP("8.8.8.8"))
+	if res.Country != "US" {
+		t.Errorf("expected US from disk cache, got %q", res.Country)
 	}
 }
 
@@ -908,8 +908,8 @@ func TestUpdateMMDB_Success(t *testing.T) {
 	if _, err := os.Stat(mmdbPath); err != nil {
 		t.Errorf("MMDB file should exist on disk: %v", err)
 	}
-	if got := db.lookup(net.ParseIP("8.8.8.8")); got != "US" {
-		t.Errorf("lookup(8.8.8.8) = %q, want US", got)
+	if got := db.lookup(net.ParseIP("8.8.8.8")); got.Country != "US" {
+		t.Errorf("lookup(8.8.8.8) = %q, want US", got.Country)
 	}
 }
 

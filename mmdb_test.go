@@ -244,8 +244,8 @@ func TestMMDBLookup(t *testing.T) {
 		t.Run(tt.ip, func(t *testing.T) {
 			ip := net.ParseIP(tt.ip)
 			got := r.lookup(ip)
-			if got != tt.want {
-				t.Errorf("lookup(%s) = %q, want %q", tt.ip, got, tt.want)
+			if got.Country != tt.want {
+				t.Errorf("lookup(%s) = %q, want %q", tt.ip, got.Country, tt.want)
 			}
 		})
 	}
@@ -266,8 +266,8 @@ func TestMMDBFromDisk(t *testing.T) {
 	}
 
 	country := r.lookup(net.ParseIP("8.8.8.8"))
-	if country != "US" {
-		t.Errorf("lookup(8.8.8.8) = %q, want US", country)
+	if country.Country != "US" {
+		t.Errorf("lookup(8.8.8.8) = %q, want US", country.Country)
 	}
 }
 
@@ -631,8 +631,8 @@ func TestMMDB32BitRecords(t *testing.T) {
 	}
 	for _, tt := range tests {
 		got := r.lookup(net.ParseIP(tt.ip))
-		if got != tt.want {
-			t.Errorf("lookup(%s) = %q, want %q", tt.ip, got, tt.want)
+		if got.Country != tt.want {
+			t.Errorf("lookup(%s) = %q, want %q", tt.ip, got.Country, tt.want)
 		}
 	}
 }
@@ -653,8 +653,8 @@ func TestMMDBLookup_MultiFieldRecord(t *testing.T) {
 	}
 	for _, tt := range tests {
 		got := r.lookup(net.ParseIP(tt.ip))
-		if got != tt.want {
-			t.Errorf("lookup(%s) = %q, want %q", tt.ip, got, tt.want)
+		if got.Country != tt.want {
+			t.Errorf("lookup(%s) = %q, want %q", tt.ip, got.Country, tt.want)
 		}
 	}
 }
@@ -668,8 +668,8 @@ func TestMMDBIPv6AddrOnIPv4DB(t *testing.T) {
 		t.Fatalf("parseMMDB: %v", err)
 	}
 	got := r.lookup(net.ParseIP("2001:4860:4860::8888"))
-	if got != "" {
-		t.Errorf("IPv6 lookup on IPv4 DB should return empty, got %q", got)
+	if got.Country != "" {
+		t.Errorf("IPv6 lookup on IPv4 DB should return empty, got %q", got.Country)
 	}
 }
 
@@ -702,8 +702,8 @@ func TestMMDBMetadataWithStringField(t *testing.T) {
 		t.Fatalf("parseMMDB with extra metadata field: %v", err)
 	}
 	got := r.lookup(net.ParseIP("8.8.8.8"))
-	if got != "US" {
-		t.Errorf("lookup(8.8.8.8) = %q, want US", got)
+	if got.Country != "US" {
+		t.Errorf("lookup(8.8.8.8) = %q, want US", got.Country)
 	}
 }
 
@@ -717,12 +717,12 @@ func TestMMDBWithPointer(t *testing.T) {
 		t.Fatalf("parseMMDB: %v", err)
 	}
 	// 91.0.0.0/24 should resolve to "DE" via the pointer.
-	if got := r.lookup(net.ParseIP("91.0.0.1")); got != "DE" {
-		t.Errorf("lookup(91.0.0.1) = %q, want DE", got)
+	if got := r.lookup(net.ParseIP("91.0.0.1")); got.Country != "DE" {
+		t.Errorf("lookup(91.0.0.1) = %q, want DE", got.Country)
 	}
 	// An IP outside the trie should return "".
-	if got := r.lookup(net.ParseIP("8.8.8.8")); got != "" {
-		t.Errorf("lookup(8.8.8.8) = %q, want empty", got)
+	if got := r.lookup(net.ParseIP("8.8.8.8")); got.Country != "" {
+		t.Errorf("lookup(8.8.8.8) = %q, want empty", got.Country)
 	}
 }
 
@@ -884,8 +884,8 @@ func TestMMDBSkipValue_MoreTypes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		got := r.lookup(net.ParseIP(tt.ip))
-		if got != tt.want {
-			t.Errorf("lookup(%s) = %q, want %q", tt.ip, got, tt.want)
+		if got.Country != tt.want {
+			t.Errorf("lookup(%s) = %q, want %q", tt.ip, got.Country, tt.want)
 		}
 	}
 }
@@ -899,12 +899,12 @@ func TestMMDBWithAbsolutePointer(t *testing.T) {
 		t.Fatalf("parseMMDB: %v", err)
 	}
 	// 8.8.8.0/24 → "DE" via absolute pointer.
-	if got := r.lookup(net.ParseIP("8.8.8.1")); got != "DE" {
-		t.Errorf("lookup(8.8.8.1) = %q, want DE", got)
+	if got := r.lookup(net.ParseIP("8.8.8.1")); got.Country != "DE" {
+		t.Errorf("lookup(8.8.8.1) = %q, want DE", got.Country)
 	}
 	// Outside the trie returns "".
-	if got := r.lookup(net.ParseIP("1.0.0.1")); got != "" {
-		t.Errorf("lookup(1.0.0.1) = %q, want empty", got)
+	if got := r.lookup(net.ParseIP("1.0.0.1")); got.Country != "" {
+		t.Errorf("lookup(1.0.0.1) = %q, want empty", got.Country)
 	}
 }
 
@@ -1012,8 +1012,119 @@ func TestMMDBIPv6Database(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := r.lookup(net.ParseIP(tt.ip))
-			if got != tt.want {
-				t.Errorf("lookup(%s) = %q, want %q", tt.ip, got, tt.want)
+			if got.Country != tt.want {
+				t.Errorf("lookup(%s) = %q, want %q", tt.ip, got.Country, tt.want)
+			}
+		})
+	}
+}
+
+// mmdbTestEncodeCountryAndCityRecord encodes a map with two entries:
+// "country_code" → cc and "city" → city.
+func mmdbTestEncodeCountryAndCityRecord(cc, city string) []byte {
+	var buf []byte
+	buf = append(buf, (7<<5)|2) // map{2 entries}
+	buf = append(buf, mmdbTestEncodeString("country_code")...)
+	buf = append(buf, mmdbTestEncodeString(cc)...)
+	buf = append(buf, mmdbTestEncodeString("city")...)
+	buf = append(buf, mmdbTestEncodeString(city)...)
+	return buf
+}
+
+// buildTestMMDBWithCity builds a minimal IPv4 MMDB where each record contains
+// both "country_code" and "city" fields.
+func buildTestMMDBWithCity(t *testing.T, entries []struct{ cidr, cc, city string }) []byte {
+	t.Helper()
+
+	type key struct{ cc, city string }
+	keyOrder := make([]key, 0, len(entries))
+	keySet := make(map[key]bool)
+	for _, e := range entries {
+		k := key{strings.ToUpper(e.cc), e.city}
+		if !keySet[k] {
+			keySet[k] = true
+			keyOrder = append(keyOrder, k)
+		}
+	}
+
+	var dataSec []byte
+	keyOffset := make(map[key]uint32, len(keyOrder))
+	for _, k := range keyOrder {
+		keyOffset[k] = uint32(len(dataSec))
+		dataSec = append(dataSec, mmdbTestEncodeCountryAndCityRecord(k.cc, k.city)...)
+	}
+
+	nodes := []testTrieNode{{-1, -1}}
+	for _, e := range entries {
+		_, cidr, err := net.ParseCIDR(e.cidr)
+		if err != nil {
+			t.Fatalf("invalid CIDR %q: %v", e.cidr, err)
+		}
+		ones, _ := cidr.Mask.Size()
+		k := key{strings.ToUpper(e.cc), e.city}
+		trieInsertBits(&nodes, cidr.IP.To4(), ones, int(keyOffset[k]))
+	}
+
+	nodeCount := uint32(len(nodes))
+	treeSec := serializeTestTree(t, nodes, 24)
+	metaSec := mmdbTestEncodeMetadata(nodeCount, 24, 4)
+
+	var out []byte
+	out = append(out, treeSec...)
+	out = append(out, make([]byte, 16)...)
+	out = append(out, dataSec...)
+	out = append(out, []byte(mmdbMetadataMarker)...)
+	out = append(out, metaSec...)
+	return out
+}
+
+// TestMMDBCityHeader verifies that the X-Geoblock-City response header is set
+// when the MMDB record contains a city field and AddCountryHeader is true.
+func TestMMDBCityHeader(t *testing.T) {
+	entries := []struct{ cidr, cc, city string }{
+		{"91.0.0.0/24", "DE", "Berlin"},
+		{"8.8.8.0/24", "US", "Mountain View"},
+	}
+	data := buildTestMMDBWithCity(t, entries)
+	mmdbDB, err := parseMMDB(data)
+	if err != nil {
+		t.Fatalf("parseMMDB: %v", err)
+	}
+
+	next := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+	g := &GeoBlock{
+		next:    next,
+		name:    "city-header-test",
+		config:  &Config{AllowPrivate: true, DefaultAllow: true, HTTPStatusCode: http.StatusForbidden, AddCountryHeader: true},
+		db:      mmdbDB,
+		allowed: map[string]struct{}{"DE": {}, "US": {}},
+		done:    make(chan struct{}),
+	}
+
+	tests := []struct {
+		remoteAddr  string
+		wantCountry string
+		wantCity    string
+	}{
+		{"91.0.0.1:1234", "DE", "Berlin"},
+		{"8.8.8.8:1234", "US", "Mountain View"},
+		{"203.0.113.1:1234", "unknown", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.remoteAddr, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.RemoteAddr = tt.remoteAddr
+			rec := httptest.NewRecorder()
+			g.ServeHTTP(rec, req)
+
+			if got := rec.Header().Get("X-Geoblock-Country"); got != tt.wantCountry {
+				t.Errorf("X-Geoblock-Country = %q, want %q", got, tt.wantCountry)
+			}
+			if got := rec.Header().Get("X-Geoblock-City"); got != tt.wantCity {
+				t.Errorf("X-Geoblock-City = %q, want %q", got, tt.wantCity)
 			}
 		})
 	}

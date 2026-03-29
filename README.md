@@ -16,7 +16,7 @@ A [Traefik](https://traefik.io/) middleware plugin that blocks or allows request
 - **Configurable fallback** when an IP is not found in the database
 - **Custom HTTP status code** for blocked requests (default: `403`)
 - **Optional request logging**
-- **Country header** — write `X-Geoblock-Country` on every response for visibility in Traefik access logs
+- **Country header** — write `X-Geoblock-Country` and `X-Geoblock-City` on every response for visibility in Traefik access logs
 
 ## Installation
 
@@ -27,7 +27,7 @@ experimental:
   plugins:
     geoblock:
       moduleName: github.com/leardev/traefik-geoblock-plugin
-      version: v0.1.3
+      version: v0.1.9
 ```
 
 ### Traefik 3.5+ — unsafe (local) plugin mode
@@ -78,7 +78,7 @@ The MMDB backend is recommended for production and multi-replica deployments.
 | `defaultAllow`       | `bool`     | `true`                      | Allow requests when the IP is not found or the DB is not loaded.  |
 | `httpStatusCode`     | `int`      | `403`                       | HTTP status code returned for blocked requests.                   |
 | `logEnabled`         | `bool`     | `false`                     | Log each allowed/blocked decision.                                |
-| `addCountryHeader`   | `bool`     | `false`                     | Write an `X-Geoblock-Country` response header with the resolved country code on every request (see [Access log visibility](#access-log-visibility)). |
+| `addCountryHeader`   | `bool`     | `false`                     | Write an `X-Geoblock-Country` response header with the resolved country code, and (MMDB backend only) an `X-Geoblock-City` header with the city name, on every request (see [Access log visibility](#access-log-visibility)). |
 
 Exactly one of `allowedCountries` or `blockedCountries` must be set.
 
@@ -126,7 +126,7 @@ http:
 
 ## Access log visibility
 
-Traefik's access log shows the HTTP status code but not *why* a request was blocked. Enable `addCountryHeader: true` to write an `X-Geoblock-Country` response header on every request, then tell Traefik to include it in access log lines.
+Traefik's access log shows the HTTP status code but not *why* a request was blocked. Enable `addCountryHeader: true` to write an `X-Geoblock-Country` response header on every request (plus `X-Geoblock-City` when using the MMDB backend), then tell Traefik to include them in access log lines.
 
 **Plugin config:**
 ```yaml
@@ -147,22 +147,24 @@ accessLog:
       defaultMode: drop
       names:
         X-Geoblock-Country: keep
+        X-Geoblock-City: keep
 ```
 
-Blocked access log lines will then include the country that triggered the block:
+Blocked access log lines will then include the country (and city, if available) that triggered the block:
 
 ```
-"GET / HTTP/1.1" 403 ... "X-Geoblock-Country: CN"
+"GET / HTTP/1.1" 403 ... "X-Geoblock-Country: CN" "X-Geoblock-City: Shanghai"
 ```
 
 **Header values:**
 
-| Value | Meaning |
-|---|---|
-| `DE`, `US`, … | Resolved 2-letter country code |
-| `unknown` | IP not found in the database |
-| `private` | Request from a private / RFC 1918 address |
-| `db-not-loaded` | Database not yet downloaded |
+| Header | Value | Meaning |
+|---|---|---|
+| `X-Geoblock-Country` | `DE`, `US`, … | Resolved 2-letter country code |
+| `X-Geoblock-Country` | `unknown` | IP not found in the database |
+| `X-Geoblock-Country` | `private` | Request from a private / RFC 1918 address |
+| `X-Geoblock-Country` | `db-not-loaded` | Database not yet downloaded |
+| `X-Geoblock-City` | `Berlin`, … | City name (MMDB backend only; omitted when not available) |
 
 > The header is set on *all* requests — allowed and blocked alike — so it can also be used for metrics or access log analysis, not just debugging 403s.
 

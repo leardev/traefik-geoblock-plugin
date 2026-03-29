@@ -36,18 +36,19 @@ type ipDatabase struct {
 	v6 []ipv6Range
 }
 
-// lookup returns the 2-letter country code for the given IP, or "" if not found.
-func (db *ipDatabase) lookup(ip net.IP) string {
+// lookup returns the geoResult for the given IP. City is always empty for the
+// CSV backend — the Lite CSV only contains country data.
+func (db *ipDatabase) lookup(ip net.IP) geoResult {
 	if v4 := ip.To4(); v4 != nil {
-		return db.lookupV4(ipToUint32(v4))
+		return geoResult{Country: db.lookupV4(ipToUint32(v4))}
 	}
 	v6 := ip.To16()
 	if v6 == nil {
-		return ""
+		return geoResult{}
 	}
 	var addr [16]byte
 	copy(addr[:], v6)
-	return db.lookupV6(addr)
+	return geoResult{Country: db.lookupV6(addr)}
 }
 
 // lookupV4 performs a binary search on sorted IPv4 ranges.

@@ -62,8 +62,8 @@ func parseMMDB(data []byte) (*mmdbReader, error) {
 	}, nil
 }
 
-// lookup implements ipLookup. Returns a 2-letter country code or "".
-func (r *mmdbReader) lookup(ip net.IP) string {
+// lookup implements ipLookup. Returns a geoResult with country code and city.
+func (r *mmdbReader) lookup(ip net.IP) geoResult {
 	// buf16 is stack-allocated and used when an IPv4 address must be
 	// represented as a 96-bit-prefixed IPv6 address in the search tree.
 	// Using a local array instead of make([]byte, 16) eliminates a heap
@@ -80,7 +80,7 @@ func (r *mmdbReader) lookup(ip net.IP) string {
 		}
 	} else {
 		if r.ipVersion == 4 {
-			return "" // IPv6 address queried against IPv4-only DB
+			return geoResult{} // IPv6 address queried against IPv4-only DB
 		}
 		raw = ip.To16()
 	}
@@ -90,16 +90,19 @@ func (r *mmdbReader) lookup(ip net.IP) string {
 		for i := 7; i >= 0; i-- {
 			next := r.readRecord(node, uint32((b>>uint(i))&1))
 			if next == r.nodeCount {
-				return "" // IP not in database
+				return geoResult{} // IP not in database
 			}
 			if next > r.nodeCount {
 				offset := r.dataOffset + (next - r.nodeCount - 16)
-				return r.findCountryCode(offset)
+				return geoResult{
+					Country: r.findStringInMap(offset, "country_code"),
+					City:    r.findStringInMap(offset, "city"),
+				}
 			}
 			node = next
 		}
 	}
-	return ""
+	return geoResult{}
 }
 
 // readRecord reads the left (bit=0) or right (bit=1) child of a tree node.
@@ -126,14 +129,6 @@ func (r *mmdbReader) readRecord(node, bit uint32) uint32 {
 		return binary.BigEndian.Uint32(r.data[off+4:])
 	}
 	return r.nodeCount // unknown record size → no data
-}
-
-// findCountryCode returns the "country_code" string from the data record at offset.
-func (r *mmdbReader) findCountryCode(offset uint32) string {
-	if offset >= uint32(len(r.data)) {
-		return ""
-	}
-	return r.findStringInMap(offset, "country_code")
 }
 
 // findStringInMap decodes an MMDB map at pos in r.data and returns the string

@@ -134,9 +134,15 @@ func CreateConfig() *Config {
 	}
 }
 
+// geoResult holds the geographic information resolved for an IP address.
+type geoResult struct {
+	Country string // 2-letter ISO country code, e.g. "DE"
+	City    string // city name, e.g. "Berlin" — only populated by the MMDB backend
+}
+
 // ipLookup is the common interface for both the CSV and MMDB lookup backends.
 type ipLookup interface {
-	lookup(ip net.IP) string
+	lookup(ip net.IP) geoResult
 }
 
 // GeoBlock is a Traefik middleware plugin for geo-blocking.
@@ -297,20 +303,23 @@ func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	country := lookup.lookup(ip)
 	if g.config.AddCountryHeader {
-		cc := country
+		cc := country.Country
 		if cc == "" {
 			cc = "unknown"
 		}
 		rw.Header().Set("X-Geoblock-Country", cc)
+		if country.City != "" {
+			rw.Header().Set("X-Geoblock-City", country.City)
+		}
 	}
-	if g.isCountryAllowed(country) {
+	if g.isCountryAllowed(country.Country) {
 		if g.config.LogEnabled {
-			g.logf("allowed %s country=%s", ip, country)
+			g.logf("allowed %s country=%s", ip, country.Country)
 		}
 		g.next.ServeHTTP(rw, req)
 	} else {
 		if g.config.LogEnabled {
-			g.logf("blocked %s country=%s", ip, country)
+			g.logf("blocked %s country=%s", ip, country.Country)
 		}
 		rw.WriteHeader(g.config.HTTPStatusCode)
 	}
