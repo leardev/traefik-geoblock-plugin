@@ -64,12 +64,17 @@ func parseMMDB(data []byte) (*mmdbReader, error) {
 
 // lookup implements ipLookup. Returns a 2-letter country code or "".
 func (r *mmdbReader) lookup(ip net.IP) string {
+	// buf16 is stack-allocated and used when an IPv4 address must be
+	// represented as a 96-bit-prefixed IPv6 address in the search tree.
+	// Using a local array instead of make([]byte, 16) eliminates a heap
+	// allocation on every IPv4 request against an IPv6-capable database.
+	var buf16 [16]byte
 	var raw []byte
 	if ip4 := ip.To4(); ip4 != nil {
 		if r.ipVersion == 6 {
 			// IPv4-in-IPv6 database: start after 96 zero bits.
-			raw = make([]byte, 16)
-			copy(raw[12:], ip4)
+			copy(buf16[12:], ip4)
+			raw = buf16[:]
 		} else {
 			raw = ip4
 		}

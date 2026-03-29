@@ -400,8 +400,8 @@ func TestNew_Validation(t *testing.T) {
 					t.Error("handler is nil")
 				}
 				// Stop updater goroutine.
-				if g, ok := handler.(*GeoBlock); ok {
-					close(g.done)
+				if g, ok := handler.(*geoBlockHandler); ok {
+					g.innerCancel()
 				}
 			}
 		})
@@ -650,26 +650,26 @@ func TestUpdaterGoroutine(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	g := handler.(*GeoBlock)
-	defer close(g.done)
+	h := handler.(*geoBlockHandler)
+	defer h.innerCancel()
 
 	// Wait for the updater goroutine to load the database.
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		g.mu.RLock()
-		loaded := g.db != nil
-		g.mu.RUnlock()
+		h.mu.RLock()
+		loaded := h.db != nil
+		h.mu.RUnlock()
 		if loaded {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	g.mu.RLock()
-	if g.db == nil {
+	h.mu.RLock()
+	if h.db == nil {
 		t.Fatal("updater goroutine should have loaded the database")
 	}
-	g.mu.RUnlock()
+	h.mu.RUnlock()
 }
 
 // --- Benchmark ---
