@@ -15,6 +15,50 @@ import (
 	"time"
 )
 
+// downloadGroup ensures that only one goroutine downloads a given database path
+// at a time across all GeoBlock instances in the same process.  All other
+// goroutines that need the same file wait for the download to complete and then
+// load the result from disk — avoiding N parallel downloads when Traefik
+// instantiates the plugin N times per pod.
+var downloadGroup singleflightGroup
+
+// singleflightGroup is a minimal singleflight implementation that suppresses
+// duplicate calls for the same key.  Unlike golang.org/x/sync/singleflight it
+// does not share the return value — callers that arrive while a download is
+// in-flight simply wait and then load the file from disk themselves.
+type singleflightGroup struct {
+	mu sync.Mutex
+	m  map[string]*sync.WaitGroup
+}
+
+// do calls fn exactly once for a given key.  Concurrent callers with the same
+// key block until fn returns, then return (false, nil) so they can load the
+// result from disk.  The caller that actually ran fn receives (true, err).
+func (g *singleflightGroup) do(key string, fn func() error) (ran bool, err error) {
+	g.mu.Lock()
+	if g.m == nil {
+		g.m = make(map[string]*sync.WaitGroup)
+	}
+	if wg, ok := g.m[key]; ok {
+		// Another goroutine is already downloading — wait for it, then return.
+		g.mu.Unlock()
+		wg.Wait()
+		return false, nil
+	}
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	g.m[key] = wg
+	g.mu.Unlock()
+
+	err = fn()
+
+	g.mu.Lock()
+	delete(g.m, key)
+	g.mu.Unlock()
+	wg.Done()
+	return true, err
+}
+
 // Config holds the plugin configuration.
 type Config struct {
 	// AllowedCountries is a list of allowed country codes (allowlist mode).
@@ -366,16 +410,43 @@ func (g *GeoBlock) runUpdate() {
 }
 
 func (g *GeoBlock) updateDatabase() {
-	db, data, err := downloadAndParse(g.config.DatabaseURL, g.config.Token)
+	var db *ipDatabase
+	dbKey := g.config.DatabasePath
+	if dbKey == "" {
+		dbKey = "csv:default"
+	}
+	ran, err := downloadGroup.do(dbKey, func() error {
+		parsed, data, dlErr := downloadAndParse(g.config.DatabaseURL, g.config.Token)
+		if dlErr != nil {
+			return dlErr
+		}
+		db = parsed
+		if g.config.DatabasePath != "" {
+			if saveErr := saveToDisk(g.config.DatabasePath, data); saveErr != nil {
+				g.logf("failed to save database to disk: %v", saveErr)
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		g.logf("database update failed: %v", err)
 		return
 	}
-
-	if g.config.DatabasePath != "" {
-		if err := saveToDisk(g.config.DatabasePath, data); err != nil {
-			g.logf("failed to save database to disk: %v", err)
+	if !ran {
+		// Another instance did the download; load from disk.
+		if g.config.DatabasePath != "" {
+			loaded, loadErr := loadDatabaseFromDisk(g.config.DatabasePath)
+			if loadErr != nil {
+				g.logf("failed to load CSV from disk after peer download: %v", loadErr)
+				return
+			}
+			db = loaded
+		} else {
+			return // in-memory only, nothing to load
 		}
+	}
+	if db == nil {
+		return
 	}
 
 	g.mu.Lock()
@@ -383,30 +454,26 @@ func (g *GeoBlock) updateDatabase() {
 	g.mu.Unlock()
 	runtime.GC() // promptly reclaim old database memory
 
-	g.logf("database updated: %d IPv4, %d IPv6 ranges", len(db.v4), len(db.v6))
+	if ran {
+		g.logf("database updated: %d IPv4, %d IPv6 ranges", len(db.v4), len(db.v6))
+	} else {
+		g.logf("database loaded from disk: %d IPv4, %d IPv6 ranges", len(db.v4), len(db.v6))
+	}
 }
 
 func (g *GeoBlock) updateMMDB() {
-	// Stream the download directly to disk instead of buffering it in memory
-	// first. This avoids a ~50 MB spike from holding both the raw download bytes
-	// and the parsed mmdbReader.data simultaneously.
-	if err := downloadToFile(g.config.DatabaseMMDBURL, g.config.Token, defaultMMDBBaseURL, g.config.DatabaseMMDBPath); err != nil {
+	// downloadGroup ensures only one goroutine per path downloads at a time.
+	// All other concurrent instances wait, then load the result from disk.
+	ran, err := downloadGroup.do(g.config.DatabaseMMDBPath, func() error {
+		return downloadToFile(g.config.DatabaseMMDBURL, g.config.Token, defaultMMDBBaseURL, g.config.DatabaseMMDBPath)
+	})
+	if err != nil {
 		g.logf("MMDB database download failed: %v", err)
-		// Multiple middleware instances start concurrently and all race to write
-		// the same .tmp file.  The first goroutine to win the rename removes the
-		// .tmp, causing the others to get "no such file or directory" on their
-		// own rename.  The destination file may already exist — try loading it.
-		if mmdb, openErr := openMMDB(g.config.DatabaseMMDBPath); openErr == nil {
-			g.mu.Lock()
-			if old, ok := g.db.(*mmdbReader); ok {
-				old.close()
-			}
-			g.db = mmdb
-			g.mu.Unlock()
-			runtime.GC()
-			g.logf("MMDB database loaded from disk after failed download (concurrent write race)")
-		}
 		return
+	}
+	if !ran {
+		// Another instance did the download; load the file it wrote.
+		g.logf("MMDB downloaded by peer instance, loading from disk")
 	}
 
 	mmdb, err := openMMDB(g.config.DatabaseMMDBPath)
@@ -423,7 +490,11 @@ func (g *GeoBlock) updateMMDB() {
 	g.mu.Unlock()
 	runtime.GC() // promptly reclaim old database memory
 
-	g.logf("MMDB database updated")
+	if ran {
+		g.logf("MMDB database updated")
+	} else {
+		g.logf("MMDB database loaded from disk")
+	}
 }
 
 var logger = log.New(os.Stdout, "", log.LstdFlags)
