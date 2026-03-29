@@ -111,7 +111,11 @@ type GeoBlock struct {
 }
 
 // New creates a new GeoBlock middleware instance.
-func New(_ context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
+// ctx is the middleware's lifecycle context; it is cancelled by Traefik when
+// the plugin instance is replaced on a configuration reload.  The updater
+// goroutine exits on cancellation so the old instance (and its ~50 MB MMDB
+// byte slice) can be garbage-collected instead of leaking.
+func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	logger.Printf("[geoblock:%s] initializing", name)
 	if err := validateConfig(config); err != nil {
 		return nil, err
@@ -135,7 +139,7 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 
 	g.loadCachedDB()
 
-	go g.updater()
+	go g.updater(ctx)
 
 	return g, nil
 }
@@ -277,7 +281,7 @@ func (g *GeoBlock) isCountryAllowed(country string) bool {
 	return g.config.DefaultAllow
 }
 
-func (g *GeoBlock) updater() {
+func (g *GeoBlock) updater(ctx context.Context) {
 	// If no database is loaded yet, download immediately.
 	g.mu.RLock()
 	needsDownload := g.db == nil
@@ -302,6 +306,8 @@ func (g *GeoBlock) updater() {
 			} else {
 				g.updateDatabase()
 			}
+		case <-ctx.Done():
+			return
 		case <-g.done:
 			return
 		}

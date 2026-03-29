@@ -9,6 +9,7 @@ package traefik_geoblock_plugin
 //      - MMDB parse (single): <  60 MiB  (the file itself; no download buffer)
 //      - CSV parse (stream):  <  30 MiB  (no compressed-bytes buffer)
 //      - CSV load from disk:  <  30 MiB  (stream-parsed; no read-all buffer)
+//      - 10 config reloads:   <  60 MiB  net growth (goroutine-leak regression)
 //
 // 2. Integration watch tests (TestMemWatch_*): run the full update lifecycle
 //    with a realistically-sized database (~50 MiB MMDB / representative CSV)
@@ -20,6 +21,7 @@ package traefik_geoblock_plugin
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -29,6 +31,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // heapInuse returns the current HeapInuse value after a forced GC so that
@@ -207,6 +210,87 @@ func TestMemory_CSVLoadFromDisk(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// --------------------------------------------------------------------------
+// TestMemory_ConfigReloads: simulates 10 Traefik config reloads (each creates
+// a new middleware instance via New() and cancels the previous context).  The
+// heap must not grow linearly — the orphaned goroutine fix means each old
+// instance is released after its context is cancelled and GC runs.
+// Limit: < 60 MiB net growth across all 10 reloads (one DB worth of slack).
+// --------------------------------------------------------------------------
+
+func TestMemory_ConfigReloads(t *testing.T) {
+	// Use a ~10 MiB MMDB (smaller than real-world but large enough to show
+	// linear growth clearly if the goroutine leak regresses).
+	const targetMiB = 10
+	padded := buildPaddedMMDB(t, targetMiB)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(padded)
+	}))
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+
+	// Pre-download the MMDB to a single shared path on disk before creating any
+	// instance.  This means loadCachedDB() inside New() will load the DB
+	// synchronously, so every instance holds a live mmdbReader immediately —
+	// no goroutine timing races, and no "could not load from disk" log noise.
+	sharedPath := filepath.Join(tmpDir, "shared.mmdb")
+	if err := downloadToFile(srv.URL, "test", defaultMMDBBaseURL, sharedPath); err != nil {
+		t.Fatalf("pre-download: %v", err)
+	}
+
+	newInstance := func(ctx context.Context, i int) http.Handler {
+		h, err := New(ctx, http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+			rw.WriteHeader(http.StatusOK)
+		}), &Config{
+			AllowedCountries: []string{"DE"},
+			Token:            "test",
+			DatabaseMMDBPath: sharedPath,
+			DatabaseMMDBURL:  srv.URL,
+			AllowPrivate:     true,
+			DefaultAllow:     false,
+			HTTPStatusCode:   http.StatusForbidden,
+			UpdateInterval:   24,
+		}, fmt.Sprintf("reload-%d", i))
+		if err != nil {
+			t.Fatalf("New() reload %d: %v", i, err)
+		}
+		return h
+	}
+
+	// Baseline: one instance fully loaded (DB is in memory from loadCachedDB).
+	ctx0, cancel0 := context.WithCancel(context.Background())
+	_ = newInstance(ctx0, 0)
+
+	before := heapInuse(t)
+
+	// 10 successive reloads: each creates a new instance (which loads the DB
+	// synchronously from the shared file) then cancels the previous context,
+	// exactly as Traefik does on a config reload.
+	var cancelPrev context.CancelFunc = cancel0
+	for i := 1; i <= 10; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		_ = newInstance(ctx, i)
+		cancelPrev()
+		cancelPrev = cancel
+	}
+	// Cancel the last instance so nothing is artificially kept alive.
+	cancelPrev()
+
+	// Give goroutines a moment to observe ctx.Done() and exit.
+	time.Sleep(50 * time.Millisecond)
+
+	after := heapInuse(t)
+
+	// Allow at most one extra DB worth of headroom (60 MiB) across all 10
+	// reloads.  If the goroutine leak regresses, each of the 10 orphaned
+	// mmdbReaders (~10 MiB each in this test) would accumulate, growing the
+	// heap by ~100 MiB — well above this threshold.
+	assertHeapDelta(t, before, after, 60<<20, "10 config reloads (goroutine-leak regression)")
+}
+
 // TestMemory_MMDBLoad: opening an MMDB reads the file once into a []byte;
 // that byte slice IS the working memory for the reader.  We synthesise a
 // realistically-sized MMDB (~50 MiB) and verify heap growth stays < 60 MiB.
@@ -761,4 +845,83 @@ func TestMemWatchReal_CSV(t *testing.T) {
 	w.snapshot("after second CSV update (swap)")
 
 	w.report()
+}
+
+// TestMemWatchReal_ConfigReloads downloads the real IPInfo Lite MMDB once,
+// then simulates 10 successive Traefik config reloads using New() + context
+// cancellation.  It asserts that the heap does not grow linearly (goroutine-
+// leak regression) and emits a per-reload memory table via t.Log.
+//
+// Run locally:
+//
+//	IPINFO_TOKEN=your_token go test -v -run TestMemWatchReal_ConfigReloads -timeout 5m ./...
+func TestMemWatchReal_ConfigReloads(t *testing.T) {
+	token := os.Getenv("IPINFO_TOKEN")
+	if token == "" {
+		t.Skip("IPINFO_TOKEN not set — skipping real-database config-reload memory test")
+	}
+
+	tmpDir := t.TempDir()
+	mmdbPath := filepath.Join(tmpDir, "ipinfo_lite_real.mmdb")
+
+	// Download the real MMDB once — all instances share this path so
+	// loadCachedDB() loads the DB synchronously inside New().
+	t.Log("downloading real MMDB from IPInfo…")
+	if err := downloadToFile("", token, defaultMMDBBaseURL, mmdbPath); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+
+	fi, err := os.Stat(mmdbPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	dbSizeMiB := mib(uint64(fi.Size()))
+	t.Logf("real MMDB size on disk: %.1f MiB", dbSizeMiB)
+
+	newInstance := func(ctx context.Context, i int) http.Handler {
+		h, err := New(ctx, http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+			rw.WriteHeader(http.StatusOK)
+		}), &Config{
+			AllowedCountries: []string{"DE"},
+			Token:            token,
+			DatabaseMMDBPath: mmdbPath,
+			AllowPrivate:     true,
+			DefaultAllow:     false,
+			HTTPStatusCode:   http.StatusForbidden,
+			UpdateInterval:   24,
+		}, fmt.Sprintf("real-reload-%d", i))
+		if err != nil {
+			t.Fatalf("New() reload %d: %v", i, err)
+		}
+		return h
+	}
+
+	w := newMemWatcher(t)
+
+	// Baseline: one instance fully loaded.
+	ctx0, cancel0 := context.WithCancel(context.Background())
+	_ = newInstance(ctx0, 0)
+	w.snapshot("after initial load (reload-0)")
+
+	var cancelPrev context.CancelFunc = cancel0
+	for i := 1; i <= 10; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		_ = newInstance(ctx, i)
+		cancelPrev()
+		cancelPrev = cancel
+		w.snapshot(fmt.Sprintf("after reload-%d (prev ctx cancelled)", i))
+	}
+	cancelPrev()
+	time.Sleep(50 * time.Millisecond) // let goroutines observe ctx.Done()
+
+	w.snapshot("final (all contexts cancelled)")
+	w.report()
+
+	// Hard assertion: total heap growth across all 10 reloads must stay below
+	// 2× the DB size.  If the goroutine leak regresses, 10 orphaned mmdbReaders
+	// accumulate ~10× the DB size — well above this threshold.
+	first := w.stages[0].heapInuse
+	last := w.stages[len(w.stages)-1].heapInuse
+	limitBytes := uint64(2 * dbSizeMiB * (1 << 20))
+	assertHeapDelta(t, first, last, limitBytes, "10 real config reloads (goroutine-leak regression)")
 }
