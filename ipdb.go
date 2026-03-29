@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -320,6 +321,11 @@ func saveToDisk(path string, data []byte) error {
 // streamToFile copies r to path atomically via a temp file + rename,
 // without buffering the full content in memory.
 func streamToFile(r io.Reader, path string) error {
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0750); err != nil {
+			return fmt.Errorf("creating directory %s: %w", dir, err)
+		}
+	}
 	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
