@@ -1129,3 +1129,135 @@ func TestMMDBCityHeader(t *testing.T) {
 		})
 	}
 }
+
+// TestMMDBCityLookup verifies that lookup() returns the correct City value
+// from MMDB records that include a "city" field.
+func TestMMDBCityLookup(t *testing.T) {
+	entries := []struct{ cidr, cc, city string }{
+		{"1.0.0.0/24", "AU", "Brisbane"},
+		{"8.8.8.0/24", "US", "Mountain View"},
+		{"91.0.0.0/24", "DE", "Berlin"},
+	}
+	data := buildTestMMDBWithCity(t, entries)
+	r, err := parseMMDB(data)
+	if err != nil {
+		t.Fatalf("parseMMDB: %v", err)
+	}
+
+	tests := []struct {
+		ip          string
+		wantCountry string
+		wantCity    string
+	}{
+		{"1.0.0.1", "AU", "Brisbane"},
+		{"8.8.8.8", "US", "Mountain View"},
+		{"91.0.0.128", "DE", "Berlin"},
+		{"203.0.113.1", "", ""},   // not in database
+		{"10.0.0.1", "", ""},      // not in database
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ip, func(t *testing.T) {
+			got := r.lookup(net.ParseIP(tt.ip))
+			if got.Country != tt.wantCountry {
+				t.Errorf("Country = %q, want %q", got.Country, tt.wantCountry)
+			}
+			if got.City != tt.wantCity {
+				t.Errorf("City = %q, want %q", got.City, tt.wantCity)
+			}
+		})
+	}
+}
+
+// TestMMDBCityAbsentWhenNotInRecord verifies that City is empty when the MMDB
+// record contains only "country_code" (no "city" field) — the standard case for
+// country-only databases.
+func TestMMDBCityAbsentWhenNotInRecord(t *testing.T) {
+	data := buildTestMMDB(t, mmdbTestEntries) // country-only records
+	r, err := parseMMDB(data)
+	if err != nil {
+		t.Fatalf("parseMMDB: %v", err)
+	}
+
+	got := r.lookup(net.ParseIP("8.8.8.8"))
+	if got.Country != "US" {
+		t.Errorf("Country = %q, want US", got.Country)
+	}
+	if got.City != "" {
+		t.Errorf("City = %q, want empty for country-only record", got.City)
+	}
+}
+
+// TestMMDBCityHeaderDisabled verifies that X-Geoblock-City is NOT set when
+// AddCountryHeader is false, even if the MMDB record contains a city.
+func TestMMDBCityHeaderDisabled(t *testing.T) {
+	entries := []struct{ cidr, cc, city string }{
+		{"91.0.0.0/24", "DE", "Berlin"},
+	}
+	data := buildTestMMDBWithCity(t, entries)
+	mmdbDB, err := parseMMDB(data)
+	if err != nil {
+		t.Fatalf("parseMMDB: %v", err)
+	}
+
+	next := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+	g := &GeoBlock{
+		next:    next,
+		name:    "city-header-disabled-test",
+		config:  &Config{AllowPrivate: true, DefaultAllow: true, HTTPStatusCode: http.StatusForbidden, AddCountryHeader: false},
+		db:      mmdbDB,
+		allowed: map[string]struct{}{"DE": {}},
+		done:    make(chan struct{}),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "91.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("X-Geoblock-Country"); got != "" {
+		t.Errorf("X-Geoblock-Country should be absent when AddCountryHeader=false, got %q", got)
+	}
+	if got := rec.Header().Get("X-Geoblock-City"); got != "" {
+		t.Errorf("X-Geoblock-City should be absent when AddCountryHeader=false, got %q", got)
+	}
+}
+
+// TestMMDBCityPrivateIP verifies that private IPs get "private" for
+// X-Geoblock-Country and no X-Geoblock-City header.
+func TestMMDBCityPrivateIP(t *testing.T) {
+	entries := []struct{ cidr, cc, city string }{
+		{"8.8.8.0/24", "US", "Mountain View"},
+	}
+	data := buildTestMMDBWithCity(t, entries)
+	mmdbDB, err := parseMMDB(data)
+	if err != nil {
+		t.Fatalf("parseMMDB: %v", err)
+	}
+
+	next := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusOK)
+	})
+	g := &GeoBlock{
+		next:    next,
+		name:    "city-private-test",
+		config:  &Config{AllowPrivate: true, DefaultAllow: true, HTTPStatusCode: http.StatusForbidden, AddCountryHeader: true},
+		db:      mmdbDB,
+		allowed: map[string]struct{}{"US": {}},
+		done:    make(chan struct{}),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "192.168.1.1:1234"
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("X-Geoblock-Country"); got != "private" {
+		t.Errorf("X-Geoblock-Country = %q, want \"private\"", got)
+	}
+	if got := rec.Header().Get("X-Geoblock-City"); got != "" {
+		t.Errorf("X-Geoblock-City should be absent for private IPs, got %q", got)
+	}
+}
