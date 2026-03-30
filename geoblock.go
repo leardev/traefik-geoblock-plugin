@@ -301,7 +301,9 @@ func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	start := time.Now()
 	country := lookup.lookup(ip)
+	elapsed := time.Since(start)
 	if g.config.AddCountryHeader {
 		cc := country.Country
 		if cc == "" {
@@ -314,12 +316,12 @@ func (g *GeoBlock) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	}
 	if g.isCountryAllowed(country.Country) {
 		if g.config.LogEnabled {
-			g.logf("allowed %s country=%s", ip, country.Country)
+			g.logf("allowed %s country=%s lookup=%s", ip, country.Country, elapsed)
 		}
 		g.next.ServeHTTP(rw, req)
 	} else {
 		if g.config.LogEnabled {
-			g.logf("blocked %s country=%s", ip, country.Country)
+			g.logf("blocked %s country=%s lookup=%s", ip, country.Country, elapsed)
 		}
 		rw.WriteHeader(g.config.HTTPStatusCode)
 	}
