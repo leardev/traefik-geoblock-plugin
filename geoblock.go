@@ -22,6 +22,59 @@ import (
 // instantiates the plugin N times per pod.
 var downloadGroup singleflightGroup
 
+// mmdbSharedCache is a process-wide in-memory cache of loaded MMDB readers,
+// keyed by file path. It ensures that concurrent New() calls for the same
+// MMDB path (which Traefik issues rapidly on config reconciliation) share a
+// single os.ReadFile allocation instead of each reading the ~50 MiB file
+// independently and spiking RSS by N×50 MiB simultaneously.
+var mmdbSharedCache struct {
+	mu      sync.Mutex
+	entries map[string]*mmdbReader
+}
+
+// acquireSharedMMDB returns the cached *mmdbReader for path, reading and
+// caching the file if it is not already present. The cache mutex is held for
+// the duration of the file read so that concurrent callers for the same cold
+// path serialize: only the first caller reads the file; the rest wait and then
+// return the already-cached reader without a second allocation.
+func acquireSharedMMDB(path string) (*mmdbReader, error) {
+	mmdbSharedCache.mu.Lock()
+	defer mmdbSharedCache.mu.Unlock()
+
+	if mmdbSharedCache.entries == nil {
+		mmdbSharedCache.entries = make(map[string]*mmdbReader)
+	}
+	if r, ok := mmdbSharedCache.entries[path]; ok {
+		return r, nil
+	}
+	r, err := openMMDB(path)
+	if err != nil {
+		return nil, err
+	}
+	mmdbSharedCache.entries[path] = r
+	return r, nil
+}
+
+// replaceSharedMMDB reads path from disk and atomically stores the result in
+// the cache, replacing any previous entry. It is intended to be called inside
+// a downloadGroup.do callback (which already serializes callers for the same
+// path), so that by the time the singleflight group releases its waiters the
+// fresh reader is available in the cache and waiters can obtain it via
+// acquireSharedMMDB without a second disk read.
+func replaceSharedMMDB(path string) error {
+	r, err := openMMDB(path)
+	if err != nil {
+		return err
+	}
+	mmdbSharedCache.mu.Lock()
+	if mmdbSharedCache.entries == nil {
+		mmdbSharedCache.entries = make(map[string]*mmdbReader)
+	}
+	mmdbSharedCache.entries[path] = r
+	mmdbSharedCache.mu.Unlock()
+	return nil
+}
+
 // singleflightGroup is a minimal singleflight implementation that suppresses
 // duplicate calls for the same key.  Unlike golang.org/x/sync/singleflight it
 // does not share the return value — callers that arrive while a download is
@@ -156,8 +209,6 @@ type GeoBlock struct {
 
 	allowed map[string]struct{}
 	blocked map[string]struct{}
-
-	done chan struct{}
 }
 
 // geoBlockHandler is the http.Handler returned to Traefik. It wraps *GeoBlock
@@ -201,7 +252,6 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		next:    next,
 		name:    name,
 		config:  config,
-		done:    make(chan struct{}),
 		allowed: buildCountrySet(config.AllowedCountries),
 		blocked: buildCountrySet(config.BlockedCountries),
 	}
@@ -258,7 +308,7 @@ func buildCountrySet(countries []string) map[string]struct{} {
 // loadCachedDB tries to load a previously cached database file from disk.
 func (g *GeoBlock) loadCachedDB() {
 	if g.config.DatabaseMMDBPath != "" {
-		mmdb, err := openMMDB(g.config.DatabaseMMDBPath)
+		mmdb, err := acquireSharedMMDB(g.config.DatabaseMMDBPath)
 		if err != nil {
 			g.logf("could not load MMDB from disk (will download): %v", err)
 			return
@@ -386,8 +436,6 @@ func (g *GeoBlock) updater(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-g.done:
-				return
 			case <-time.After(backoff):
 				g.loadCachedDB()
 				if backoff < 5*time.Minute {
@@ -405,8 +453,6 @@ func (g *GeoBlock) updater(ctx context.Context) {
 		case <-ticker.C:
 			g.runUpdate()
 		case <-ctx.Done():
-			return
-		case <-g.done:
 			return
 		}
 	}
@@ -476,27 +522,30 @@ func (g *GeoBlock) updateMMDB() {
 	// downloadGroup ensures only one goroutine per path downloads at a time.
 	// All other concurrent instances wait, then load the result from disk.
 	ran, err := downloadGroup.do(g.config.DatabaseMMDBPath, func() error {
-		return downloadToFile(g.config.DatabaseMMDBURL, g.config.Token, defaultMMDBBaseURL, g.config.DatabaseMMDBPath)
+		if dlErr := downloadToFile(g.config.DatabaseMMDBURL, g.config.Token, defaultMMDBBaseURL, g.config.DatabaseMMDBPath); dlErr != nil {
+			return dlErr
+		}
+		// Replace the shared cache entry inside the singleflight callback.
+		// By the time do() releases its waiters, the fresh reader is already
+		// cached, so all waiting instances get it via acquireSharedMMDB below
+		// without a second disk read.
+		return replaceSharedMMDB(g.config.DatabaseMMDBPath)
 	})
 	if err != nil {
 		g.logf("MMDB database download failed: %v", err)
 		return
 	}
 	if !ran {
-		// Another instance did the download; load the file it wrote.
-		g.logf("MMDB downloaded by peer instance, loading from disk")
+		g.logf("MMDB downloaded by peer instance, loading from shared cache")
 	}
 
-	mmdb, err := openMMDB(g.config.DatabaseMMDBPath)
+	mmdb, err := acquireSharedMMDB(g.config.DatabaseMMDBPath)
 	if err != nil {
-		g.logf("failed to open MMDB database: %v", err)
+		g.logf("failed to load MMDB database: %v", err)
 		return
 	}
 
 	g.mu.Lock()
-	if old, ok := g.db.(*mmdbReader); ok {
-		old.close()
-	}
 	g.db = mmdb
 	g.mu.Unlock()
 	runtime.GC() // promptly reclaim old database memory
@@ -504,7 +553,7 @@ func (g *GeoBlock) updateMMDB() {
 	if ran {
 		g.logf("MMDB database updated")
 	} else {
-		g.logf("MMDB database loaded from disk")
+		g.logf("MMDB database loaded from shared cache")
 	}
 }
 

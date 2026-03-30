@@ -411,7 +411,6 @@ func TestMemory_MMDBUpdatePeak(t *testing.T) {
 			UpdateInterval:   24,
 		},
 		allowed: map[string]struct{}{"DE": {}},
-		done:    make(chan struct{}),
 	}
 
 	// Load an initial DB so a swap occurs during the update.
@@ -577,7 +576,6 @@ func TestMemWatch_CSVLifecycle(t *testing.T) {
 			UpdateInterval:   24,
 		},
 		allowed: map[string]struct{}{"DE": {}},
-		done:    make(chan struct{}),
 	}
 
 	w := newMemWatcher(t)
@@ -633,7 +631,6 @@ func TestMemWatch_MMDBLifecycle(t *testing.T) {
 			UpdateInterval:   24,
 		},
 		allowed: map[string]struct{}{"DE": {}},
-		done:    make(chan struct{}),
 	}
 
 	w := newMemWatcher(t)
@@ -688,7 +685,6 @@ func TestMemWatch_MMDBConcurrentReads(t *testing.T) {
 			UpdateInterval:   24,
 		},
 		allowed: map[string]struct{}{"DE": {}},
-		done:    make(chan struct{}),
 	}
 
 	// Load the initial DB.
@@ -752,7 +748,6 @@ func TestMemWatchReal_MMDB(t *testing.T) {
 			UpdateInterval:   24,
 		},
 		allowed: map[string]struct{}{"DE": {}},
-		done:    make(chan struct{}),
 	}
 
 	w := newMemWatcher(t)
@@ -811,7 +806,6 @@ func TestMemWatchReal_CSV(t *testing.T) {
 			UpdateInterval:   24,
 		},
 		allowed: map[string]struct{}{"DE": {}},
-		done:    make(chan struct{}),
 	}
 
 	w := newMemWatcher(t)

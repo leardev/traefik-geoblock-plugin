@@ -312,9 +312,6 @@ func (r *mmdbReader) resolvePointer(ctrl byte, pos uint32) (uint32, uint32) {
 	}
 }
 
-// close is a no-op — the MMDB data is held as a plain []byte with no open file descriptor.
-func (r *mmdbReader) close() {}
-
 // decodeMMDBMetadata parses the MMDB metadata map at start in data and returns
 // node_count, record_size, and ip_version.
 func decodeMMDBMetadata(data []byte, start uint32) (nodeCount, recordSize, ipVersion uint32, err error) {

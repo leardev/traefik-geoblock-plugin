@@ -288,7 +288,6 @@ func TestMMDBServeHTTP(t *testing.T) {
 		config:  &Config{AllowPrivate: true, DefaultAllow: false, HTTPStatusCode: http.StatusForbidden},
 		db:      mmdbDB,
 		allowed: map[string]struct{}{"DE": {}},
-		done:    make(chan struct{}),
 	}
 
 	tests := []struct {
@@ -344,7 +343,6 @@ func TestMMDBUpdateFlow(t *testing.T) {
 			HTTPStatusCode:   http.StatusForbidden,
 		},
 		allowed: map[string]struct{}{"DE": {}},
-		done:    make(chan struct{}),
 	}
 
 	g.mu.RLock()
@@ -680,16 +678,6 @@ func TestMMDBParseError_NoMarker(t *testing.T) {
 	if err == nil {
 		t.Error("expected an error for missing metadata marker, got nil")
 	}
-}
-
-// TestMMDBClose verifies that close() is safe to call (it is a no-op).
-func TestMMDBClose(t *testing.T) {
-	data := buildTestMMDB(t, mmdbTestEntries)
-	r, err := parseMMDB(data)
-	if err != nil {
-		t.Fatalf("parseMMDB: %v", err)
-	}
-	r.close() // must not panic
 }
 
 // TestMMDBMetadataWithStringField builds an MMDB whose metadata map contains an extra
@@ -1100,7 +1088,6 @@ func TestMMDBCityHeader(t *testing.T) {
 		config:  &Config{AllowPrivate: true, DefaultAllow: true, HTTPStatusCode: http.StatusForbidden, AddCountryHeader: true},
 		db:      mmdbDB,
 		allowed: map[string]struct{}{"DE": {}, "US": {}},
-		done:    make(chan struct{}),
 	}
 
 	tests := []struct {
@@ -1152,8 +1139,8 @@ func TestMMDBCityLookup(t *testing.T) {
 		{"1.0.0.1", "AU", "Brisbane"},
 		{"8.8.8.8", "US", "Mountain View"},
 		{"91.0.0.128", "DE", "Berlin"},
-		{"203.0.113.1", "", ""},   // not in database
-		{"10.0.0.1", "", ""},      // not in database
+		{"203.0.113.1", "", ""}, // not in database
+		{"10.0.0.1", "", ""},    // not in database
 	}
 
 	for _, tt := range tests {
@@ -1209,7 +1196,6 @@ func TestMMDBCityHeaderDisabled(t *testing.T) {
 		config:  &Config{AllowPrivate: true, DefaultAllow: true, HTTPStatusCode: http.StatusForbidden, AddCountryHeader: false},
 		db:      mmdbDB,
 		allowed: map[string]struct{}{"DE": {}},
-		done:    make(chan struct{}),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -1246,7 +1232,6 @@ func TestMMDBCityPrivateIP(t *testing.T) {
 		config:  &Config{AllowPrivate: true, DefaultAllow: true, HTTPStatusCode: http.StatusForbidden, AddCountryHeader: true},
 		db:      mmdbDB,
 		allowed: map[string]struct{}{"US": {}},
-		done:    make(chan struct{}),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

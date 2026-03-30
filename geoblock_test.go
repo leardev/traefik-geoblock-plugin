@@ -276,7 +276,6 @@ func TestServeHTTP_AllowlistMode(t *testing.T) {
 		config:  &Config{AllowPrivate: true, DefaultAllow: false, HTTPStatusCode: http.StatusForbidden},
 		db:      db,
 		allowed: map[string]struct{}{"DE": {}},
-		done:    make(chan struct{}),
 	}
 
 	tests := []struct {
@@ -317,7 +316,6 @@ func TestServeHTTP_BlocklistMode(t *testing.T) {
 		config:  &Config{AllowPrivate: true, DefaultAllow: true, HTTPStatusCode: http.StatusForbidden},
 		db:      db,
 		blocked: map[string]struct{}{"CN": {}},
-		done:    make(chan struct{}),
 	}
 
 	tests := []struct {
@@ -445,7 +443,6 @@ func TestUpdateDatabase(t *testing.T) {
 			HTTPStatusCode:   http.StatusForbidden,
 		},
 		allowed: map[string]struct{}{"DE": {}},
-		done:    make(chan struct{}),
 	}
 
 	// Verify no database loaded yet.
@@ -569,7 +566,6 @@ func TestUpdateDatabaseReplacesOld(t *testing.T) {
 		},
 		allowed: map[string]struct{}{"US": {}},
 		db:      oldDB,
-		done:    make(chan struct{}),
 	}
 
 	// With old DB, 8.8.8.8 is DE -> should be blocked (only US allowed).
@@ -614,8 +610,7 @@ func TestUpdateDatabaseFailureKeepsOld(t *testing.T) {
 			Token:       "test",
 			DatabaseURL: srv.URL,
 		},
-		db:   oldDB,
-		done: make(chan struct{}),
+		db: oldDB,
 	}
 
 	g.updateDatabase()
@@ -749,7 +744,6 @@ func TestServeHTTP_NoDBLoaded(t *testing.T) {
 			config:  &Config{DefaultAllow: true, HTTPStatusCode: http.StatusForbidden},
 			db:      nil,
 			allowed: map[string]struct{}{"DE": {}},
-			done:    make(chan struct{}),
 		}
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.RemoteAddr = "8.8.8.8:1234"
@@ -767,7 +761,6 @@ func TestServeHTTP_NoDBLoaded(t *testing.T) {
 			config:  &Config{DefaultAllow: false, HTTPStatusCode: http.StatusForbidden},
 			db:      nil,
 			allowed: map[string]struct{}{"DE": {}},
-			done:    make(chan struct{}),
 		}
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.RemoteAddr = "8.8.8.8:1234"
@@ -790,7 +783,6 @@ func TestServeHTTP_UnparsableIP(t *testing.T) {
 		config:  &Config{DefaultAllow: true, HTTPStatusCode: http.StatusForbidden},
 		db:      nil,
 		allowed: map[string]struct{}{"DE": {}},
-		done:    make(chan struct{}),
 	}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "not-a-valid-ip" // no port, not a valid IP
@@ -813,7 +805,6 @@ func TestServeHTTP_LogEnabled(t *testing.T) {
 		config:  &Config{AllowPrivate: true, DefaultAllow: false, HTTPStatusCode: http.StatusForbidden, LogEnabled: true},
 		db:      db,
 		allowed: map[string]struct{}{"DE": {}},
-		done:    make(chan struct{}),
 	}
 
 	// Allowed country — log branch "allowed".
@@ -868,7 +859,6 @@ func TestServeHTTP_CustomStatusCode(t *testing.T) {
 		config:  &Config{AllowPrivate: true, DefaultAllow: false, HTTPStatusCode: wantCode},
 		db:      db,
 		allowed: map[string]struct{}{"DE": {}},
-		done:    make(chan struct{}),
 	}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "8.8.8.8:1234" // US — not in allowlist
@@ -894,7 +884,6 @@ func TestUpdateMMDB_Success(t *testing.T) {
 			DatabaseMMDBURL:  srv.URL,
 			DatabaseMMDBPath: mmdbPath,
 		},
-		done: make(chan struct{}),
 	}
 
 	g.updateMMDB()
@@ -928,7 +917,6 @@ func TestUpdateMMDB_DownloadFail(t *testing.T) {
 			DatabaseMMDBURL:  srv.URL,
 			DatabaseMMDBPath: "/tmp/not-written.mmdb",
 		},
-		done: make(chan struct{}),
 	}
 	g.updateMMDB()
 
@@ -953,7 +941,6 @@ func TestUpdateMMDB_SaveFail(t *testing.T) {
 			DatabaseMMDBURL:  srv.URL,
 			DatabaseMMDBPath: "/nonexistent/directory/test.mmdb",
 		},
-		done: make(chan struct{}),
 	}
 	g.updateMMDB()
 
@@ -981,7 +968,6 @@ func TestUpdateMMDB_ParseFail(t *testing.T) {
 			DatabaseMMDBURL:  srv.URL,
 			DatabaseMMDBPath: filepath.Join(tmpDir, "invalid.mmdb"),
 		},
-		done: make(chan struct{}),
 	}
 	g.updateMMDB()
 
