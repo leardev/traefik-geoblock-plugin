@@ -424,7 +424,7 @@ func TestNewValidation_MMDB(t *testing.T) {
 			t.Fatal("handler is nil")
 		}
 		if g, ok := handler.(*geoBlockHandler); ok {
-			g.innerCancel()
+			g.unregister()
 		}
 	})
 }

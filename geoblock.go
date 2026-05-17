@@ -75,6 +75,99 @@ func replaceSharedMMDB(path string) error {
 	return nil
 }
 
+// sharedUpdaters maintains a single updater goroutine per database path so that
+// N middleware instances sharing the same DB path don't each spawn their own
+// goroutine. When Traefik reconciles config, it calls New() once per route —
+// without deduplication, 30+ routes means 30+ goroutines (and on every
+// hot-reload another 30+ that may linger until a finalizer fires). This caused
+// goroutine and memory accumulation leading to OOM kills.
+var sharedUpdaters struct {
+	mu      sync.Mutex
+	entries map[string]*sharedUpdater
+}
+
+// sharedUpdater is the single updater goroutine state for a database path.
+type sharedUpdater struct {
+	refCount int
+	cancel   context.CancelFunc
+}
+
+// registerUpdater ensures a single updater goroutine is running for the given
+// GeoBlock's database path and config. Returns an unregister func that the
+// caller must invoke when the middleware instance is discarded.
+func registerUpdater(g *GeoBlock) func() {
+	key := g.dbKey()
+
+	sharedUpdaters.mu.Lock()
+	defer sharedUpdaters.mu.Unlock()
+
+	if sharedUpdaters.entries == nil {
+		sharedUpdaters.entries = make(map[string]*sharedUpdater)
+	}
+
+	if su, ok := sharedUpdaters.entries[key]; ok {
+		su.refCount++
+		return func() { unregisterUpdater(key) }
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	su := &sharedUpdater{refCount: 1, cancel: cancel}
+	sharedUpdaters.entries[key] = su
+
+	go sharedUpdaterLoop(ctx, g)
+
+	return func() { unregisterUpdater(key) }
+}
+
+// unregisterUpdater decrements the refcount and stops the updater goroutine
+// when the last middleware instance for a path is discarded.
+func unregisterUpdater(key string) {
+	sharedUpdaters.mu.Lock()
+	defer sharedUpdaters.mu.Unlock()
+
+	su, ok := sharedUpdaters.entries[key]
+	if !ok {
+		return
+	}
+	su.refCount--
+	if su.refCount <= 0 {
+		su.cancel()
+		delete(sharedUpdaters.entries, key)
+	}
+}
+
+// sharedUpdaterLoop is the single goroutine that keeps the database up to date
+// for all middleware instances sharing the same database path.
+func sharedUpdaterLoop(ctx context.Context, g *GeoBlock) {
+	// If no database is loaded yet, attempt to download immediately.
+	mmdbSharedCache.mu.Lock()
+	_, loaded := mmdbSharedCache.entries[g.config.DatabaseMMDBPath]
+	mmdbSharedCache.mu.Unlock()
+
+	if !loaded && g.config.DatabaseMMDBPath != "" {
+		g.runUpdate()
+	} else if g.config.DatabasePath != "" {
+		g.mu.RLock()
+		needsDownload := g.db == nil
+		g.mu.RUnlock()
+		if needsDownload {
+			g.runUpdate()
+		}
+	}
+
+	ticker := time.NewTicker(time.Duration(g.config.UpdateInterval) * time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			g.runUpdate()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 // singleflightGroup is a minimal singleflight implementation that suppresses
 // duplicate calls for the same key.  Unlike golang.org/x/sync/singleflight it
 // does not share the return value — callers that arrive while a download is
@@ -211,26 +304,34 @@ type GeoBlock struct {
 	blocked map[string]struct{}
 }
 
+// dbKey returns the deduplication key for the database backend. It is used by
+// the shared updater registry so that all middleware instances using the same
+// database path share a single updater goroutine.
+func (g *GeoBlock) dbKey() string {
+	if g.config.DatabaseMMDBPath != "" {
+		return "mmdb:" + g.config.DatabaseMMDBPath
+	}
+	if g.config.DatabasePath != "" {
+		return "csv:" + g.config.DatabasePath
+	}
+	return "csv:default"
+}
+
 // geoBlockHandler is the http.Handler returned to Traefik. It wraps *GeoBlock
-// with an inner context cancel func. A runtime finalizer on this wrapper calls
-// innerCancel when Traefik drops the handler reference (e.g. on a config
-// hot-reload). This stops the updater goroutine and allows the *GeoBlock (and
-// its ~50 MiB MMDB / ~150 MiB CSV database) to be garbage-collected even when
-// the outer lifecycle context passed to New() is never cancelled — which is the
-// case with Traefik 2.x where the context is context.Background().
+// with an unregister func. A runtime finalizer on this wrapper calls unregister
+// when Traefik drops the handler reference (e.g. on a config hot-reload). This
+// decrements the shared updater's refcount and, when it hits zero, stops the
+// updater goroutine.
 type geoBlockHandler struct {
 	*GeoBlock
-	innerCancel context.CancelFunc
+	unregister func()
 }
 
 // New creates a new GeoBlock middleware instance.
-// ctx is the middleware's lifecycle context provided by Traefik. In Traefik 2.x
-// this is typically context.Background() and is never cancelled on hot-reload.
-// To guard against that, New() creates an inner context and stores its cancel
-// func in a geoBlockHandler wrapper. A runtime finalizer on the wrapper calls
-// innerCancel when Traefik drops the handler, stopping the updater goroutine
-// and allowing the database to be garbage-collected.
-func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
+// A single updater goroutine is shared across all instances that use the same
+// database path, preventing goroutine accumulation when Traefik creates many
+// middleware instances (one per route) during config reconciliation.
+func New(_ context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	logger.Printf("[geoblock:%s] initializing", name)
 	if err := validateConfig(config); err != nil {
 		return nil, err
@@ -243,11 +344,6 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		config.HTTPStatusCode = http.StatusForbidden
 	}
 
-	// innerCtx is cancelled either when the outer ctx is cancelled (Traefik
-	// shutdown or a Traefik version that properly manages the lifecycle) OR
-	// when the finalizer on geoBlockHandler fires (handler discarded on reload).
-	innerCtx, innerCancel := context.WithCancel(ctx)
-
 	g := &GeoBlock{
 		next:    next,
 		name:    name,
@@ -258,14 +354,14 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	g.loadCachedDB()
 
-	go g.updater(innerCtx)
+	// Register with the shared updater for this database path. The first
+	// instance to register starts the goroutine; subsequent instances just
+	// bump the refcount. The returned unregister func is called by the
+	// finalizer when Traefik discards the handler.
+	unregister := registerUpdater(g)
 
-	// Wrap g in a handler whose finalizer cancels innerCtx. The goroutine holds
-	// g (*GeoBlock) directly (not handler), so handler can become unreachable
-	// when Traefik drops its reference, triggering the finalizer even while the
-	// goroutine is still running. The goroutine then observes ctx.Done() and exits.
-	handler := &geoBlockHandler{GeoBlock: g, innerCancel: innerCancel}
-	runtime.SetFinalizer(handler, func(h *geoBlockHandler) { h.innerCancel() })
+	handler := &geoBlockHandler{GeoBlock: g, unregister: unregister}
+	runtime.SetFinalizer(handler, func(h *geoBlockHandler) { h.unregister() })
 
 	return handler, nil
 }
@@ -410,52 +506,6 @@ func (g *GeoBlock) isCountryAllowed(country string) bool {
 	}
 
 	return g.config.DefaultAllow
-}
-
-func (g *GeoBlock) updater(ctx context.Context) {
-	// If no database is loaded yet, attempt to download immediately.
-	g.mu.RLock()
-	needsDownload := g.db == nil
-	g.mu.RUnlock()
-
-	if needsDownload {
-		g.runUpdate()
-
-		// If the DB is still not loaded after the download attempt (e.g. this
-		// goroutine lost the concurrent-rename race but another goroutine already
-		// wrote the file), retry by loading from disk only — no re-download.
-		// Backoff: 5s → 10s → 20s → … capped at 5 minutes.
-		backoff := 5 * time.Second
-		for {
-			g.mu.RLock()
-			loaded := g.db != nil
-			g.mu.RUnlock()
-			if loaded {
-				break
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(backoff):
-				g.loadCachedDB()
-				if backoff < 5*time.Minute {
-					backoff *= 2
-				}
-			}
-		}
-	}
-
-	ticker := time.NewTicker(time.Duration(g.config.UpdateInterval) * time.Hour)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			g.runUpdate()
-		case <-ctx.Done():
-			return
-		}
-	}
 }
 
 func (g *GeoBlock) runUpdate() {

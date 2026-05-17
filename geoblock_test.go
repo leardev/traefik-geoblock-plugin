@@ -399,7 +399,7 @@ func TestNew_Validation(t *testing.T) {
 				}
 				// Stop updater goroutine.
 				if g, ok := handler.(*geoBlockHandler); ok {
-					g.innerCancel()
+					g.unregister()
 				}
 			}
 		})
@@ -646,7 +646,7 @@ func TestUpdaterGoroutine(t *testing.T) {
 	}
 
 	h := handler.(*geoBlockHandler)
-	defer h.innerCancel()
+	defer h.unregister()
 
 	// Wait for the updater goroutine to load the database.
 	deadline := time.Now().Add(10 * time.Second)
