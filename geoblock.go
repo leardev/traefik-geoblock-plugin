@@ -90,6 +90,45 @@ var sharedUpdaters struct {
 type sharedUpdater struct {
 	refCount int
 	cancel   context.CancelFunc
+
+	// mu protects all. It must never be held while acquiring sharedUpdaters.mu
+	// to avoid lock ordering inversions.
+	mu  sync.Mutex
+	all []*GeoBlock // every live GeoBlock instance sharing this path
+}
+
+// addInstance adds g to the fan-out list. Called with sharedUpdaters.mu held.
+func (su *sharedUpdater) addInstance(g *GeoBlock) {
+	su.mu.Lock()
+	su.all = append(su.all, g)
+	su.mu.Unlock()
+}
+
+// removeInstance removes g from the fan-out list.
+func (su *sharedUpdater) removeInstance(g *GeoBlock) {
+	su.mu.Lock()
+	defer su.mu.Unlock()
+	for i, inst := range su.all {
+		if inst == g {
+			su.all[i] = su.all[len(su.all)-1]
+			su.all[len(su.all)-1] = nil // clear for GC
+			su.all = su.all[:len(su.all)-1]
+			return
+		}
+	}
+}
+
+// setDB atomically installs db as the live reader in every registered instance.
+// After this call the previous reader has no references from any registered
+// instance, so a subsequent runtime.GC() can collect it.
+func (su *sharedUpdater) setDB(db ipLookup) {
+	su.mu.Lock()
+	defer su.mu.Unlock()
+	for _, g := range su.all {
+		g.mu.Lock()
+		g.db = db
+		g.mu.Unlock()
+	}
 }
 
 // registerUpdater ensures a single updater goroutine is running for the given
@@ -107,21 +146,26 @@ func registerUpdater(g *GeoBlock) func() {
 
 	if su, ok := sharedUpdaters.entries[key]; ok {
 		su.refCount++
-		return func() { unregisterUpdater(key) }
+		su.addInstance(g)
+		return func() { unregisterUpdater(key, g) }
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	su := &sharedUpdater{refCount: 1, cancel: cancel}
+	su := &sharedUpdater{
+		refCount: 1,
+		cancel:   cancel,
+		all:      []*GeoBlock{g},
+	}
 	sharedUpdaters.entries[key] = su
 
-	go sharedUpdaterLoop(ctx, g)
+	go sharedUpdaterLoop(ctx, g, su)
 
-	return func() { unregisterUpdater(key) }
+	return func() { unregisterUpdater(key, g) }
 }
 
-// unregisterUpdater decrements the refcount and stops the updater goroutine
-// when the last middleware instance for a path is discarded.
-func unregisterUpdater(key string) {
+// unregisterUpdater removes g from the shared updater's fan-out list, decrements
+// the refcount, and stops the updater goroutine when the last instance is gone.
+func unregisterUpdater(key string, g *GeoBlock) {
 	sharedUpdaters.mu.Lock()
 	defer sharedUpdaters.mu.Unlock()
 
@@ -129,6 +173,7 @@ func unregisterUpdater(key string) {
 	if !ok {
 		return
 	}
+	su.removeInstance(g)
 	su.refCount--
 	if su.refCount <= 0 {
 		su.cancel()
@@ -138,7 +183,20 @@ func unregisterUpdater(key string) {
 
 // sharedUpdaterLoop is the single goroutine that keeps the database up to date
 // for all middleware instances sharing the same database path.
-func sharedUpdaterLoop(ctx context.Context, g *GeoBlock) {
+func sharedUpdaterLoop(ctx context.Context, g *GeoBlock, su *sharedUpdater) {
+	// fanOut pushes the current reader from g to all registered instances and
+	// then triggers GC so the displaced old reader can be collected immediately
+	// (it has no remaining references once every instance's g.db is updated).
+	fanOut := func() {
+		g.mu.RLock()
+		db := g.db
+		g.mu.RUnlock()
+		if db != nil {
+			su.setDB(db)
+		}
+		runtime.GC()
+	}
+
 	// If no database is loaded yet, attempt to download immediately.
 	mmdbSharedCache.mu.Lock()
 	_, loaded := mmdbSharedCache.entries[g.config.DatabaseMMDBPath]
@@ -146,12 +204,14 @@ func sharedUpdaterLoop(ctx context.Context, g *GeoBlock) {
 
 	if !loaded && g.config.DatabaseMMDBPath != "" {
 		g.runUpdate()
+		fanOut()
 	} else if g.config.DatabasePath != "" {
 		g.mu.RLock()
 		needsDownload := g.db == nil
 		g.mu.RUnlock()
 		if needsDownload {
 			g.runUpdate()
+			fanOut()
 		}
 	}
 
@@ -162,6 +222,7 @@ func sharedUpdaterLoop(ctx context.Context, g *GeoBlock) {
 		select {
 		case <-ticker.C:
 			g.runUpdate()
+			fanOut()
 		case <-ctx.Done():
 			return
 		}
@@ -317,21 +378,16 @@ func (g *GeoBlock) dbKey() string {
 	return "csv:default"
 }
 
-// geoBlockHandler is the http.Handler returned to Traefik. It wraps *GeoBlock
-// with an unregister func. A runtime finalizer on this wrapper calls unregister
-// when Traefik drops the handler reference (e.g. on a config hot-reload). This
-// decrements the shared updater's refcount and, when it hits zero, stops the
-// updater goroutine.
-type geoBlockHandler struct {
-	*GeoBlock
-	unregister func()
-}
-
 // New creates a new GeoBlock middleware instance.
 // A single updater goroutine is shared across all instances that use the same
 // database path, preventing goroutine accumulation when Traefik creates many
 // middleware instances (one per route) during config reconciliation.
-func New(_ context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
+//
+// Cleanup is tied to the context that Traefik passes: when ctx is cancelled
+// (on hot-reload or route removal) a small goroutine calls unregister() so
+// the shared updater's refcount is decremented immediately — no finalizer
+// delay needed.
+func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	logger.Printf("[geoblock:%s] initializing", name)
 	if err := validateConfig(config); err != nil {
 		return nil, err
@@ -356,14 +412,18 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 
 	// Register with the shared updater for this database path. The first
 	// instance to register starts the goroutine; subsequent instances just
-	// bump the refcount. The returned unregister func is called by the
-	// finalizer when Traefik discards the handler.
+	// bump the refcount and are added to the fan-out list so that future
+	// database updates are applied to all instances, not just the goroutine
+	// owner. When Traefik cancels ctx the small goroutine below fires
+	// unregister() immediately, removing this instance from the fan-out list
+	// and decrementing the refcount without waiting for a finalizer.
 	unregister := registerUpdater(g)
+	go func() {
+		<-ctx.Done()
+		unregister()
+	}()
 
-	handler := &geoBlockHandler{GeoBlock: g, unregister: unregister}
-	runtime.SetFinalizer(handler, func(h *geoBlockHandler) { h.unregister() })
-
-	return handler, nil
+	return g, nil
 }
 
 // validateConfig checks that the configuration is self-consistent and applies
@@ -559,7 +619,8 @@ func (g *GeoBlock) updateDatabase() {
 	g.mu.Lock()
 	g.db = db
 	g.mu.Unlock()
-	runtime.GC() // promptly reclaim old database memory
+	// GC is triggered by sharedUpdaterLoop after fanning out the new reader
+	// to all registered instances.
 
 	if ran {
 		g.logf("database updated: %d IPv4, %d IPv6 ranges", len(db.v4), len(db.v6))
@@ -598,7 +659,9 @@ func (g *GeoBlock) updateMMDB() {
 	g.mu.Lock()
 	g.db = mmdb
 	g.mu.Unlock()
-	runtime.GC() // promptly reclaim old database memory
+	// GC is triggered by sharedUpdaterLoop after fanning out the new reader
+	// to all registered instances, ensuring the old reader has zero references
+	// before collection is attempted.
 
 	if ran {
 		g.logf("MMDB database updated")

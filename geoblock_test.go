@@ -385,7 +385,9 @@ func TestNew_Validation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handler, err := New(context.Background(), next, tt.config, "test")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel() // stops the updater goroutine when the sub-test ends
+			handler, err := New(ctx, next, tt.config, "test")
 			if tt.wantErr {
 				if err == nil {
 					t.Error("expected error, got nil")
@@ -396,10 +398,6 @@ func TestNew_Validation(t *testing.T) {
 				}
 				if handler == nil {
 					t.Error("handler is nil")
-				}
-				// Stop updater goroutine.
-				if g, ok := handler.(*geoBlockHandler); ok {
-					g.unregister()
 				}
 			}
 		})
@@ -631,7 +629,8 @@ func TestUpdaterGoroutine(t *testing.T) {
 		rw.WriteHeader(http.StatusOK)
 	})
 
-	handler, err := New(context.Background(), next, &Config{
+	ctx, cancel := context.WithCancel(context.Background())
+	handler, err := New(ctx, next, &Config{
 		AllowedCountries: []string{"DE"},
 		Token:            "test-token",
 		DatabasePath:     t.TempDir() + "/test.csv.gz",
@@ -642,11 +641,12 @@ func TestUpdaterGoroutine(t *testing.T) {
 		HTTPStatusCode:   http.StatusForbidden,
 	}, "goroutine-test")
 	if err != nil {
+		cancel()
 		t.Fatalf("unexpected error: %v", err)
 	}
+	defer cancel() // stops the updater goroutine when the test ends
 
-	h := handler.(*geoBlockHandler)
-	defer h.unregister()
+	h := handler.(*GeoBlock)
 
 	// Wait for the updater goroutine to load the database.
 	deadline := time.Now().Add(10 * time.Second)
